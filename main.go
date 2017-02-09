@@ -18,10 +18,6 @@
 */
 package main
 
-//#cgo LDFLAGS: -lgsl -lgslcblas
-//#include <gsl/gsl_multifit.h>
-import "C"
-
 import (
 	"bufio"
 	"flag"
@@ -782,14 +778,6 @@ func main() {
 		return
 	}
 
-	c0_best := create_or_panic("c0_best.txt")
-	defer c0_best.Close()
-	c1_best := create_or_panic("c1_best.txt")
-	defer c1_best.Close()
-	c2_best := create_or_panic("c2_best.txt")
-	defer c2_best.Close()
-	nodes_best := create_or_panic("size_best.txt")
-	defer nodes_best.Close()
 	executiontime := create_or_panic("execution_time.txt")
 	defer executiontime.Close()
 
@@ -801,7 +789,7 @@ func main() {
 	fitness_test := create_or_panic("fitnesstest.txt")
 	defer fitness_test.Close()
 	// Seed RNG
-	//rand.Seed(time.Now().UnixNano())
+	rand.Seed(time.Now().UnixNano())
 	// Read parameters of the algorithm
 	config = read_config_file()
 	read_input_data(*path_in, *path_test)
@@ -812,13 +800,6 @@ func main() {
 	fmt.Fprintln(fitness_test, Myevaluate_test(p.individuals[p.index_best]))
 	index_best = best_individual()
 
-	fmt.Fprintln(nodes_best, node_count(p.individuals[p.index_best]))
-	fmt.Fprintln(c0_best, 0)
-	fmt.Fprintln(c1_best, 1)
-	fmt.Fprintln(c2_best, 0)
-
-	//stop1 = time.Now()
-	//elapsedTime = stop1.Sub(stop1).Nanoseconds() / time.Millisecond
 	elapsedTime := time.Since(start) / time.Millisecond
 	fmt.Fprintln(executiontime, elapsedTime)
 
