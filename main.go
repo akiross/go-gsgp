@@ -485,14 +485,13 @@ func update_terminal_symbols(i int) {
 
 // Implements a tournament selection procedure
 func tournament_selection() int {
-	index := make([]int, config.tournament_size)
-	for i := 0; i < config.tournament_size; i++ {
-		index[i] = rand.Intn(config.population_size)
-	}
-	best_index := index[0]
+	// Select first participant
+	best_index := rand.Intn(config.population_size)
+	// Pick best individual
 	for i := 1; i < config.tournament_size; i++ {
-		if better(fit[index[i]], fit[best_index]) {
-			best_index = index[i]
+		next := rand.Intn(config.population_size)
+		if better(fit[next], fit[best_index]) {
+			best_index = next
 		}
 	}
 	return best_index
@@ -500,30 +499,29 @@ func tournament_selection() int {
 
 // Copies an individual of the population at generation g-1 to the current population(generation g)
 func reproduction(i int) {
+	// Elitism: if i is the best individual, reproduce it
 	if i != index_best {
-		p := tournament_selection()
-		sem_train_cases_new = append(sem_train_cases_new, sem_train_cases[p])
-		fit_new = append(fit_new, fit[p])
-		sem_test_cases_new = append(sem_test_cases_new, sem_test_cases[p])
-		fit_new_test = append(fit_new_test, fit_test[p])
-	} else {
-		sem_train_cases_new = append(sem_train_cases_new, sem_train_cases[i])
-		fit_new = append(fit_new, fit[i])
-		sem_test_cases_new = append(sem_test_cases_new, sem_test_cases[i])
-		fit_new_test = append(fit_new_test, fit_test[i])
+		// If it's not the best, select one at random to reproduce
+		i = tournament_selection()
 	}
+	// Copy fitness and semantics of the selected individual
+	sem_train_cases_new = append(sem_train_cases_new, sem_train_cases[i])
+	fit_new = append(fit_new, fit[i])
+	sem_test_cases_new = append(sem_test_cases_new, sem_test_cases[i])
+	fit_new_test = append(fit_new_test, fit_test[i])
 }
 
 // Performs a geometric semantic crossover
 func geometric_semantic_crossover(i int) {
 	if i != index_best {
+		// Replace the individual with the crossover of two parents
 		p1 := tournament_selection()
 		p2 := tournament_selection()
-
+		// Generate a random tree and compute its semantic (train and test)
 		rt := create_grow_tree(0, nil, config.max_depth_creation)
 		sem_rt := Myevaluate_random(rt)
 		sem_rt_test := Myevaluate_random_test(rt)
-
+		// Compute the geometric semantic (train)
 		val := make(Semantic, 0)
 		val_test := make(Semantic, 0)
 		for j := 0; j < nrow; j++ {
@@ -532,7 +530,7 @@ func geometric_semantic_crossover(i int) {
 		}
 		sem_train_cases_new = append(sem_train_cases_new, val)
 		update_training_fitness(val, true)
-
+		// Compute the geometric semantic (test)
 		for j := 0; j < nrow_test; j++ {
 			sigmoid := 1 / (1 + math.Exp(-sem_rt_test[j]))
 			val_test = append(val_test, sem_test_cases[p1][j]*sigmoid+sem_test_cases[p2][j]*(1-sigmoid))
@@ -540,6 +538,7 @@ func geometric_semantic_crossover(i int) {
 		sem_test_cases_new = append(sem_test_cases_new, val_test)
 		update_test_fitness(val_test, true)
 	} else {
+		// The best individual will not be changed
 		sem_train_cases_new = append(sem_train_cases_new, sem_train_cases[i])
 		fit_new = append(fit_new, fit[i])
 		sem_test_cases_new = append(sem_test_cases_new, sem_test_cases[i])
@@ -550,6 +549,7 @@ func geometric_semantic_crossover(i int) {
 // Performs a geometric semantic mutation
 func geometric_semantic_mutation(i int) {
 	if i != index_best {
+		// Replace the individual with a mutated version
 		rt1 := create_grow_tree(0, nil, config.max_depth_creation)
 		rt2 := create_grow_tree(0, nil, config.max_depth_creation)
 
@@ -574,6 +574,7 @@ func geometric_semantic_mutation(i int) {
 		}
 		update_test_fitness(sem_test_cases_new[i], false)
 	} else {
+		// The best individual will not be changed
 		sem_train_cases_new = append(sem_train_cases_new, sem_train_cases[i])
 		fit_new = append(fit_new, fit[i])
 		sem_test_cases_new = append(sem_test_cases_new, sem_test_cases[i])
@@ -595,7 +596,8 @@ func update_training_fitness(semantic_values Semantic, crossover bool) {
 	}
 }
 
-// Calculates the test fitness of an individual using the information stored in its semantic vector. The function updates the data structure that stores the test fitness of the individuals
+// Calculates the test fitness of an individual using the information stored in its semantic vector.
+// The function updates the data structure that stores the test fitness of the individuals
 func update_test_fitness(semantic_values Semantic, crossover bool) {
 	var d float64
 	for j := nrow; j < nrow+nrow_test; j++ {
