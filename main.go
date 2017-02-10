@@ -30,150 +30,87 @@ import (
 	"time"
 )
 
-var (
-	// variable containing the numbers of terminal symbols (variables, not constant values)
-	NUM_VARIABLE_SYMBOLS int
-	// variable that stores the numbers of terminal symbols that contain constant values
-	NUM_CONSTANT_SYMBOLS int
-	// variable containing the numbers of functional symbols
-	NUM_FUNCTIONAL_SYMBOLS int
-)
-
-// struct used to store a single instance in memory
+// Instance represent a single training/test instance in memory
 type Instance struct {
-	// array containing the values of the independent variables
-	vars []float64
-	// variable that stores the result of the evaluation of an individual on the particular instance represented by the values stored in the variable double *vars
-	res float64
-	// target value
-	y_value float64
+	vars    []float64 // Values of the input (independent) variables
+	y_value float64   // Target value
 }
 
-// variable used to store training and test instances in memory
-var set []Instance
-
-var (
-	// variable containing the numbers of rows (instances) of the training dataset
-	nrow int
-	// variable containing the numbers of columns (excluding the target) of the training dataset
-	nvar int
-	// variable containing the numbers of rows (instances) of the test dataset
-	nrow_test int
-	// variable containing the numbers of columns (excluding the target) of the test dataset
-	nvar_test int
-)
-
-// struct used to store the parameters of the configuration.ini file
-type Cfg struct {
-
-	// size of the population: number of candidate solutions
-	population_size int
-	// number of iterations of the GP algorithm
-	max_number_generations int
-	// initialization method: 0 -> grow method, 1-> full method, 2-> ramped half and half method
-	init_type int // 0 -> grow, 1 -> full, 2 -> ramped h&h
-	// crossover rate
-	p_crossover float64
-	// mutation rate
-	p_mutation float64
-	// maximum depth of a newly created individual
-	max_depth_creation int
-	// size of the tournament selection
-	tournament_size int
-	// variable that indicates if it is possible to accept single-node individual in the initial population
-	zero_depth bool
-	// mutation step of the geometric semantic mutation
-	mutation_step float64
-	// variable that indicates the number of constants to be inserted in the terminal set
-	num_random_constants int
-	// variable that indicates the minimum possible value for a random constant
-	min_random_constant float64
-	// variable that indicates the maximum possible value for a random constant
-	max_random_constant float64
-	// variable that indicates if the problem is a minimization problem (1) or a maximization problem (0)
-	minimization_problem bool
+// Config stores the parameters of a configuration.ini file
+type Config struct {
+	population_size        int     // Number of candidate solutions
+	max_number_generations int     // Number of generations of the GP algorithm
+	init_type              int     // Initialization method: 0 -> grow, 1 -> full, 2 -> ramped h&h
+	p_crossover            float64 // Crossover rate
+	p_mutation             float64 // Mutation rate
+	max_depth_creation     int     // Maximum depth of a newly created individual
+	tournament_size        int     // Size of the tournament selection
+	zero_depth             bool    // Are single-node individuals acceptable in initial population?
+	mutation_step          float64 // Step size for the geometric semantic mutation
+	num_random_constants   int     // Number of constants to be inserted in terminal set
+	min_random_constant    float64 // Minimum possible value for a random constant
+	max_random_constant    float64 // Maximum possible value for a random constant
+	minimization_problem   bool    // True if we are minimizing, false if maximizing
 }
-
-// struct variable containing the values of the parameters specified in the configuration.ini file
-var config Cfg
 
 // Symbol represents a symbol of the set T (terminal symbols) or F (functional symbols).
 type Symbol struct {
-	// boolean variable used to discriminate between functional and terminal symbols
-	symType bool // Functional or terminal
-	// int variable that contains the number of arguments accepted by a symbol. It is 0 for a terminal symbol
-	arity int
-	// int variable that contains a unique identifier for the symbol
-	id int
-	// symbolic name of the symbol
-	name string
-	// variable that contains the current value of a terminal symbol
-	value float64
+	symType bool    // Functional or terminal
+	arity   int     // Number of arguments accepted by a symbol. 0 for terminals
+	id      int     // Unique identifier for the symbol
+	name    string  // Symbolic name
+	value   float64 // Current value of terminal symbol
 }
-
-// array containing terminal and functional symbols
-var symbols []*Symbol
 
 // Node is used to represent a node of the tree.
 type Node struct {
-	//symbol inside a node
-	root *Symbol
-	// parent node
-	parent *Node
-	//pointers to children
-	children []*Node
+	root     *Symbol // Symbol for the node
+	parent   *Node   // Parent of the node, if any (can be nil)
+	children []*Node // Child nodes, can be empty
 }
 
 // Population is used to represent a GP population.
 type Population struct {
-	// pointers to individuals
-	individuals []*Node
-	// int variable that contains the number of individuals that are inside the population
-	num_ind int
-	// int variable that contains the index of the best individual in the population
-	index_best int
-	// array of training fitness values
-	fitness []float64
-	// array of test fitness values
-	fitness_test []float64
+	individuals []*Node   // Individuals' root node
+	num_ind     int       // Number of individuals in the population
+	index_best  int       // Index of the best individual after evaluate is run
+	fitness     []float64 // Fitness values for each individual
 }
 
+// The Semantic of one individual is a vector as long as the dataset where each
+// component is the value obtaining by applying the individual to the datum.
 type Semantic []float64
 
 var (
-	// array of training fitness values at generation g
-	fit_ []float64
-	// array of test fitness values at generation g
-	fit_test []float64
-	// array of training fitness values at the current generation g+1
-	fit_new []float64
-	// array of test fitness values at the current generation g+1
-	fit_new_test []float64
+	config = read_config_file("configuration.ini") // Current configuration values read from configuration.ini
 
-	// array where each element (that is also an array) contains the semantics of an individual of the population, computed on the training set at generation g
-	sem_train_cases []Semantic
-	// array where each element (that is also an array) contains the semantics of an individual of the population, computed on the training set at generation g+1
-	sem_train_cases_new []Semantic
-	// array where each element (that is also an array) contains the semantics of an individual of the population, computed on the test set at generation g
-	sem_test_cases []Semantic
-	// array where each element (that is also an array) contains the semantics of an individual of the population, computed on the test set at generation g+1
-	sem_test_cases_new []Semantic
+	NUM_VARIABLE_SYMBOLS   int // Number of terminal symbols for variables
+	NUM_CONSTANT_SYMBOLS   int // Number of terminal symbols for constants
+	NUM_FUNCTIONAL_SYMBOLS int // Number of functional symbols
 
-	// variable that stores the index of the best individual.
-	index_best int
-)
-
-func init() {
+	// Terminal and functional symbols
+	// This slice is filled only by create_T_F() and its values are updated only by update_terminal_symbols().
+	// len(symbols) == NUM_VARIABLE_SYMBOLS+NUM_CONSTANT_SYMBOLS+NUM_FUNCTIONAL_SYMBOLS
 	symbols = make([]*Symbol, 0)
-	fit_ = make([]float64, 0)
-	fit_test = make([]float64, 0)
-	fit_new = make([]float64, 0)
-	fit_new_test = make([]float64, 0)
-	sem_train_cases = make([]Semantic, 0)
-	sem_train_cases_new = make([]Semantic, 0)
-	sem_test_cases = make([]Semantic, 0)
-	sem_test_cases_new = make([]Semantic, 0)
-}
+
+	set       []Instance // Store training and test instances
+	nrow      int        // Number of rows (instances) in training dataset
+	nvar      int        // Number of variables (columns excluding target) in training dataset
+	nrow_test int        // Number of rows (instances) in test dataset
+	nvar_test int        // Number of input variables (columns excluding target) in test dataset
+
+	fit          = make([]float64, 0) // Training fitness values at generation g
+	fit_test     = make([]float64, 0) // Test fitness values at generation g
+	fit_new      = make([]float64, 0) // Training fitness values at current generation g+1
+	fit_new_test = make([]float64, 0) // Test fitness values at current generation g+1
+
+	sem_train_cases     = make([]Semantic, 0) // Semantics of the population, computed on training set, at generation g
+	sem_train_cases_new = make([]Semantic, 0) // Semantics of the population, computed on training set, at current generation g+1
+	sem_test_cases      = make([]Semantic, 0) // Semantics of the population, computed on test set, at generation g
+	sem_test_cases_new  = make([]Semantic, 0) // Semantics of the population, computed on test set, at current generation g+1
+
+	index_best int // Index of the best individual (where? sem_*?)
+)
 
 func square_diff(a, b float64) float64 { return (a - b) * (a - b) }
 
@@ -193,14 +130,14 @@ func atof(s string) float64 {
 	return v
 }
 
-// read_config_file reads the configuration file and returns a Cfg object containing the parameters
-func read_config_file() Cfg {
-	file, err := os.Open("configuration.ini")
+// read_config_file returns a filled Config struct with values read in the specified file
+func read_config_file(path string) Config {
+	file, err := os.Open(path)
 	if err != nil {
 		panic(err)
 	}
 	defer file.Close()
-	var config Cfg
+	var config Config
 	input := bufio.NewScanner(file)
 	for input.Scan() {
 		fields := strings.Split(input.Text(), "=")
@@ -341,10 +278,9 @@ func create_ramped_pop(p *Population) {
 // Creates a population using the method specified by the parameter
 func create_population(method int) *Population {
 	p := &Population{
-		individuals:  make([]*Node, config.population_size),
-		num_ind:      0,
-		fitness:      make([]float64, config.population_size),
-		fitness_test: make([]float64, config.population_size),
+		individuals: make([]*Node, config.population_size),
+		num_ind:     0,
+		fitness:     make([]float64, config.population_size),
 	}
 	switch method {
 	case 0:
@@ -465,19 +401,21 @@ func eval(tree *Node) float64 {
 			panic("Undefined symbol: '" + tree.root.name + "'")
 		}
 	} else {
-		return tree.root.value
+		return tree.root.value // Root points to a terminal
 	}
 }
 
 // Calculates the fitness of all the individuals and determines the best individual in the population
+// Evaluate is called once, after individuals have been initialized for the first time.
+// This function fills p.fitness and p.index_best using Myevaluate
 func evaluate(p *Population) {
 	p.fitness[0] = Myevaluate(p.individuals[0])
 	p.index_best = 0
-	fit_ = append(fit_, p.fitness[0])
+	fit = append(fit, p.fitness[0])
 	fit_test = append(fit_test, Myevaluate_test(p.individuals[0]))
 	for i := 1; i < config.population_size; i++ {
 		p.fitness[i] = Myevaluate(p.individuals[i])
-		fit_ = append(fit_, p.fitness[i])
+		fit = append(fit, p.fitness[i])
 		fit_test = append(fit_test, Myevaluate_test(p.individuals[i]))
 		if better(p.fitness[i], p.fitness[p.index_best]) {
 			p.index_best = i
@@ -485,30 +423,32 @@ func evaluate(p *Population) {
 	}
 }
 
-// Calculates the training fitness of an individual (representing as a tree)
+// Calculates the training fitness of an individual (representing as a tree).
+// This function will append to sem_train_cases the semantic of the evaluated node.
 func Myevaluate(el *Node) float64 {
 	var d float64
 	val := make(Semantic, 0)
 	for i := 0; i < nrow; i++ {
-		update_terminal_symbols(i)
-		set[i].res = eval(el)
-		val = append(val, set[i].res)
-		d += square_diff(set[i].res, set[i].y_value)
+		update_terminal_symbols(i) // Update the input variables to the i-th instance
+		res := eval(el)            // Evaluate the element on the i-th instance
+		val = append(val, res)
+		d += square_diff(res, set[i].y_value)
 	}
 	sem_train_cases = append(sem_train_cases, val)
 	d = d / float64(nrow)
 	return d
 }
 
-// Calculates the test fitness of an individual (representing as a tree)
+// Calculates the test fitness of an individual (representing as a tree).
+// This function will append to sem_test_cases the semantic of the evaluated node.
 func Myevaluate_test(el *Node) float64 {
 	var d float64
 	val := make(Semantic, 0)
 	for i := nrow; i < nrow+nrow_test; i++ {
 		update_terminal_symbols(i)
-		set[i].res = eval(el)
-		val = append(val, set[i].res)
-		d += square_diff(set[i].res, set[i].y_value)
+		res := eval(el)
+		val = append(val, res)
+		d += square_diff(res, set[i].y_value)
 	}
 	sem_test_cases = append(sem_test_cases, val)
 	d = d / float64(nrow_test)
@@ -520,8 +460,7 @@ func Myevaluate_random(el *Node) Semantic {
 	sem := make(Semantic, 0)
 	for i := 0; i < nrow; i++ {
 		update_terminal_symbols(i)
-		set[i].res = eval(el)
-		sem = append(sem, set[i].res)
+		sem = append(sem, eval(el))
 	}
 	return sem
 }
@@ -531,13 +470,13 @@ func Myevaluate_random_test(el *Node) Semantic {
 	sem := make(Semantic, 0)
 	for i := nrow; i < nrow+nrow_test; i++ {
 		update_terminal_symbols(i)
-		set[i].res = eval(el)
-		sem = append(sem, set[i].res)
+		sem = append(sem, eval(el))
 	}
 	return sem
 }
 
-// Updates the value of the terminal symbols in a tree.
+// Updates the value of the terminal (variable) symbols in a tree
+// Set the value of the terminal symbols to be the value of the independent variables in the dataset i-th row
 func update_terminal_symbols(i int) {
 	for j := 0; j < NUM_VARIABLE_SYMBOLS; j++ {
 		symbols[j+NUM_FUNCTIONAL_SYMBOLS].value = set[i].vars[j]
@@ -552,8 +491,7 @@ func tournament_selection() int {
 	}
 	best_index := index[0]
 	for i := 1; i < config.tournament_size; i++ {
-		fit := fit_[index[i]]
-		if better(fit, fit_[best_index]) {
+		if better(fit[index[i]], fit[best_index]) {
 			best_index = index[i]
 		}
 	}
@@ -565,12 +503,12 @@ func reproduction(i int) {
 	if i != index_best {
 		p := tournament_selection()
 		sem_train_cases_new = append(sem_train_cases_new, sem_train_cases[p])
-		fit_new = append(fit_new, fit_[p])
+		fit_new = append(fit_new, fit[p])
 		sem_test_cases_new = append(sem_test_cases_new, sem_test_cases[p])
 		fit_new_test = append(fit_new_test, fit_test[p])
 	} else {
 		sem_train_cases_new = append(sem_train_cases_new, sem_train_cases[i])
-		fit_new = append(fit_new, fit_[i])
+		fit_new = append(fit_new, fit[i])
 		sem_test_cases_new = append(sem_test_cases_new, sem_test_cases[i])
 		fit_new_test = append(fit_new_test, fit_test[i])
 	}
@@ -603,7 +541,7 @@ func geometric_semantic_crossover(i int) {
 		update_test_fitness(val_test, true)
 	} else {
 		sem_train_cases_new = append(sem_train_cases_new, sem_train_cases[i])
-		fit_new = append(fit_new, fit_[i])
+		fit_new = append(fit_new, fit[i])
 		sem_test_cases_new = append(sem_test_cases_new, sem_test_cases[i])
 		fit_new_test = append(fit_new_test, fit_test[i])
 	}
@@ -637,7 +575,7 @@ func geometric_semantic_mutation(i int) {
 		update_test_fitness(sem_test_cases_new[i], false)
 	} else {
 		sem_train_cases_new = append(sem_train_cases_new, sem_train_cases[i])
-		fit_new = append(fit_new, fit_[i])
+		fit_new = append(fit_new, fit[i])
 		sem_test_cases_new = append(sem_test_cases_new, sem_test_cases[i])
 		fit_new_test = append(fit_new_test, fit_test[i])
 	}
@@ -673,8 +611,8 @@ func update_test_fitness(semantic_values Semantic, crossover bool) {
 // Finds the best individual in the population
 func best_individual() int {
 	var best_index int
-	for i := 1; i < len(fit_); i++ {
-		if better(fit_[i], fit_[best_index]) {
+	for i := 1; i < len(fit); i++ {
+		if better(fit[i], fit[best_index]) {
 			best_index = i
 		}
 	}
@@ -683,7 +621,7 @@ func best_individual() int {
 
 // Updates the tables used to store fitness values and semantics of the individual. It is used at the end of each iteration of the algorithm
 func update_tables() {
-	fit_ = fit_new
+	fit = fit_new
 	fit_new = make([]float64, 0)
 	sem_train_cases = sem_train_cases_new
 	sem_train_cases_new = make([]Semantic, 0)
@@ -764,9 +702,11 @@ func create_or_panic(path string) *os.File {
 }
 
 func main() {
-
+	// Setup CLI interface
 	path_in := flag.String("train_file", "", "Path for the train file")
 	path_test := flag.String("test_file", "", "Path for the test file")
+	rng_seed := flag.Int64("seed", time.Now().UnixNano(), "Specify a seed for the RNG (uses time by default)")
+
 	flag.Parse()
 
 	if *path_in == "" {
@@ -789,9 +729,7 @@ func main() {
 	fitness_test := create_or_panic("fitnesstest.txt")
 	defer fitness_test.Close()
 	// Seed RNG
-	rand.Seed(time.Now().UnixNano())
-	// Read parameters of the algorithm
-	config = read_config_file()
+	rand.Seed(*rng_seed)
 	read_input_data(*path_in, *path_test)
 	create_T_F()
 	p := create_population(config.init_type)
@@ -825,7 +763,7 @@ func main() {
 		update_tables()
 		index_best = best_individual()
 
-		fmt.Fprintln(fitness_train, fit_[index_best])
+		fmt.Fprintln(fitness_train, fit[index_best])
 		fmt.Fprintln(fitness_test, fit_test[index_best])
 
 		elapsedTime += time.Since(gen_start) / time.Millisecond
