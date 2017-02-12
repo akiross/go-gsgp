@@ -421,16 +421,11 @@ func create_full_tree(depth int, parent *Node, max_depth int) *Node {
 // Return a string representing a tree (S-expr)
 // It requires update_terminal_symbols() to be called before writing
 func write_tree(el *Node) string {
-	println("Writing el:", el)
-	if el != nil {
-		println("  Symbol is:", el.root)
-	}
 	if el.root.isFunc {
 		out := "(" + el.root.name + " "
 		for i := 0; i < el.root.arity-1; i++ {
 			out += write_tree(el.children[i]) + " "
 		}
-		println("Got ", out, el.root.arity, len(el.children))
 		return out + write_tree(el.children[el.root.arity-1]) + ")"
 	} else {
 		return el.root.name
@@ -504,34 +499,36 @@ func read_tree(sexpr string) *Node {
 	level, token, in_token := 0, make([]rune, 0), false
 	for _, c := range sexpr {
 		switch {
-		case c == '(':
-			// A new sub-tree is starting
-			level++
-			in_token = false
-			// Prepare for a new sub-tree
-			root = &Node{
-				root:     nil,
-				parent:   root, // First ( will start the new tree
-				children: nil,
-			}
-		case c == ')':
-			// A token or expression was terminated
-			tok := strings.TrimSpace(string(token)) // Clean token string
-			token = make([]rune, 0)                 // Reset the buffer
-			level--                                 // Go down a level
-			in_token = false
+		case c == '(': // A new sub-tree is starting
+			level, in_token = level+1, false
+			root = &Node{nil, root, nil} // Prepare for a new sub-tree
+		case c == ')' && !in_token:
+			// A sub-tree was terminated, last token already parsed
+			level-- // Go up a level
 			if level < 0 {
 				break // Something's wrong
 			}
-			// If empty string, two )) happened or ) happened after spaces
-			if tok == "" {
-				print("Going up a level for free: current root is ", root.root.name)
-				// No token, but we are still closing a sub-tree
-				root = root.parent
-				println(" new root is: ", root)
-				continue // Continue with next token
+			// Ensure algorithm is correct
+			if (root.parent == nil) != (level == 0) {
+				panic("Something is wrong: level is not zero, but we are at root level!")
 			}
-			println("Got token", tok)
+			if root.parent == nil { // If we are at the topmost level
+				return root // Returning root will ignore trailing garbage
+			} else {
+				root = root.parent // Go up one level
+			}
+		case c == ')' && in_token:
+			// A token was terminated, and tree is ended
+			tok := strings.TrimSpace(string(token)) // Clean token string
+			token = make([]rune, 0)                 // Reset the buffer
+			level, in_token = level-1, false        // Go up one level
+			if level < 0 {
+				break // Something's wrong
+			}
+			// Ensure algorithm is correct
+			if tok == "" {
+				panic("Tok should not be empty!")
+			}
 			// Search for the token
 			sym := search_terminal_or_add(tok)
 			if sym == nil {
@@ -544,14 +541,23 @@ func read_tree(sexpr string) *Node {
 				children: nil,
 			}
 			root.children = append(root.children, node)
-			println("Terminal added, child added")
 			// Check arity
 			if len(root.children) != root.root.arity {
 				panic(fmt.Sprintf("Wrong arity: expected %d children, got %d", root.root.arity, len(root.children)))
 			}
-			println("Correctly added", write_tree(root))
-			// Go back to parent
-			root = root.parent
+			if root.parent != nil {
+				// Add the closing tree as children
+				root.parent.children = append(root.parent.children, root)
+				// Go back to parent
+				root = root.parent
+			} else {
+				// Ensure algorithm is correct
+				if level != 0 {
+					panic("Wrong level!")
+				}
+				// We reached the maximum level
+				return root // Returning root here will ignore trailing garbage
+			}
 		case c == ' ' && in_token:
 			// A token terminated, process it
 			in_token = false
@@ -566,17 +572,13 @@ func read_tree(sexpr string) *Node {
 				// Add the constant value to the symbols
 				sym := search_terminal_or_add(tok)
 				// Build a node for the tree
-				node := &Node{
-					root:     sym,
-					parent:   root,
-					children: nil,
-				}
+				node := &Node{sym, root, nil}
 				root.children = append(root.children, node)
 			}
 			token = make([]rune, 0)
 		case c == ' ' && !in_token:
 			token = append(token, c)
-		case c != ' ' && !in_token:
+		case c != ' ':
 			in_token = true // A new token has started
 			token = append(token, c)
 		default:

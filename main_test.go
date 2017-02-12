@@ -16,7 +16,7 @@ func testMalformed(t *testing.T) {
 		read_tree(malformedString)
 	}
 	/* Bad things that could happen:
-	- parentheses not opened/closed
+	- parentheses not opened (extra trailing chars are tolerated)
 	- token not a valid float
 	- unknown variable
 	- unknown operation
@@ -24,7 +24,8 @@ func testMalformed(t *testing.T) {
 	*/
 	runTest("Malformed expression", "(+ 3.14 (- 15 92")
 	runTest("Malformed expression", "(+ 3.14 (- 15 92)")
-	runTest("Malformed expression", "(+ 3.14 (- 15 92)))")
+	//runTest("Malformed expression", "(+ 3.14 (- 15 92)))")
+	//runTest("Malformed expression", "(+ 3.14 15))")
 	runTest("Invalid terminal", "+ 3.14 .0015")
 	runTest("Invalid terminal", "hello")
 	runTest("Invalid terminal", "3.IA")
@@ -43,6 +44,9 @@ func testRead(t *testing.T) {
 	read_tree("(+ 3.14 (- 15 92))")
 	read_tree(" ( +  x0  x1 ) ")
 	read_tree("(+ 0 (- x0 92))")
+	// Extra trailing characters can be ignored
+	read_tree("(+ 0 (- x0 92)))))")
+	read_tree("(+ 0 (- x0 92))foobar")
 }
 
 func testWriteAndRead(t *testing.T) {
@@ -65,9 +69,9 @@ func testWriteAndRead(t *testing.T) {
 		"(+ 0 (- x0 92))",
 	}
 	for _, s := range testStrings {
-		println("Reading tree", s)
+		//println("Reading tree", s)
 		tree := read_tree(s)
-		println("Processing ", s, " produced tree", tree)
+		//println("Processing ", s, " produced tree", tree)
 		repr := write_tree(tree)
 		if repr != s {
 			t.Error("Error when converting expression: ", s)
