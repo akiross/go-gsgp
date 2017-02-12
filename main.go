@@ -486,11 +486,7 @@ func read_tree(sexpr string) *Node {
 			panic("Invalid terminal") // It was not a valid terminal
 		}
 		// Return the node
-		return &Node{
-			root:     sym,
-			parent:   nil,
-			children: nil,
-		}
+		return &Node{sym, nil, nil}
 	}
 
 	// Tree root to produce
@@ -508,10 +504,6 @@ func read_tree(sexpr string) *Node {
 			if level < 0 {
 				break // Something's wrong
 			}
-			// Ensure algorithm is correct
-			if (root.parent == nil) != (level == 0) {
-				panic("Something is wrong: level is not zero, but we are at root level!")
-			}
 			if root.parent == nil { // If we are at the topmost level
 				return root // Returning root will ignore trailing garbage
 			} else {
@@ -525,21 +517,13 @@ func read_tree(sexpr string) *Node {
 			if level < 0 {
 				break // Something's wrong
 			}
-			// Ensure algorithm is correct
-			if tok == "" {
-				panic("Tok should not be empty!")
-			}
 			// Search for the token
 			sym := search_terminal_or_add(tok)
 			if sym == nil {
 				panic("Unknown terminal: " + tok)
 			}
 			// Build a child for the current tree
-			node := &Node{
-				root:     sym,
-				parent:   root,
-				children: nil,
-			}
+			node := &Node{sym, root, nil}
 			root.children = append(root.children, node)
 			// Check arity
 			if len(root.children) != root.root.arity {
@@ -551,10 +535,6 @@ func read_tree(sexpr string) *Node {
 				// Go back to parent
 				root = root.parent
 			} else {
-				// Ensure algorithm is correct
-				if level != 0 {
-					panic("Wrong level!")
-				}
 				// We reached the maximum level
 				return root // Returning root here will ignore trailing garbage
 			}
@@ -581,8 +561,6 @@ func read_tree(sexpr string) *Node {
 		case c != ' ':
 			in_token = true // A new token has started
 			token = append(token, c)
-		default:
-			// Ignore other cases
 		}
 	}
 	if level != 0 {
