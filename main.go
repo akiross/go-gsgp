@@ -428,14 +428,7 @@ func write_tree(el *Node) string {
 		}
 		return out + write_tree(el.children[el.root.arity-1]) + ")"
 	} else {
-		return el.root.name
-		/*
-			if el.root.arity < 0 {
-				return fmt.Sprint(el.root.value)
-			} else {
-				return el.root.name
-			}
-		*/
+		return el.root.name // This should be the variable name or the constant value
 	}
 }
 
@@ -492,18 +485,14 @@ func read_tree(sexpr string) *Node {
 	// Tree root to produce
 	var root *Node
 	// Status
-	level, token, in_token := 0, make([]rune, 0), false
+	token, in_token := make([]rune, 0), false
 	for _, c := range sexpr {
 		switch {
 		case c == '(': // A new sub-tree is starting
-			level, in_token = level+1, false
+			in_token = false
 			root = &Node{nil, root, nil} // Prepare for a new sub-tree
 		case c == ')' && !in_token:
 			// A sub-tree was terminated, last token already parsed
-			level-- // Go up a level
-			if level < 0 {
-				break // Something's wrong
-			}
 			if root.parent == nil { // If we are at the topmost level
 				return root // Returning root will ignore trailing garbage
 			} else {
@@ -513,10 +502,7 @@ func read_tree(sexpr string) *Node {
 			// A token was terminated, and tree is ended
 			tok := strings.TrimSpace(string(token)) // Clean token string
 			token = make([]rune, 0)                 // Reset the buffer
-			level, in_token = level-1, false        // Go up one level
-			if level < 0 {
-				break // Something's wrong
-			}
+			in_token = false
 			// Search for the token
 			sym := search_terminal_or_add(tok)
 			if sym == nil {
@@ -563,10 +549,7 @@ func read_tree(sexpr string) *Node {
 			token = append(token, c)
 		}
 	}
-	if level != 0 {
-		panic("Malformed expression")
-	}
-	return root
+	panic("Malformed expression")
 }
 
 // Implements a protected division. If the denominator is equal to 0 the function returns 1 as a result of the division;
