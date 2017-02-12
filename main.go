@@ -55,11 +55,11 @@ type Config struct {
 
 // Symbol represents a symbol of the set T (terminal symbols) or F (functional symbols).
 type Symbol struct {
-	symType bool    // Functional or terminal
-	arity   int     // Number of arguments accepted by a symbol. 0 for terminals
-	id      int     // Unique identifier for the symbol
-	name    string  // Symbolic name
-	value   float64 // Current value of terminal symbol
+	isFunc bool    // Functional or terminal
+	arity  int     // Number of arguments accepted by a symbol. Terminals have arity -1 when constants and the index of the variable otherwise
+	id     int     // Unique identifier for this symbol
+	name   string  // Symbolic name
+	value  float64 // Current value of terminal symbol
 }
 
 // Node is used to represent a node of the tree.
@@ -84,13 +84,15 @@ type Semantic []float64
 var (
 	config = read_config_file("configuration.ini") // Current configuration values read from configuration.ini
 
+	NUM_FUNCTIONAL_SYMBOLS int // Number of functional symbols
 	NUM_VARIABLE_SYMBOLS   int // Number of terminal symbols for variables
 	NUM_CONSTANT_SYMBOLS   int // Number of terminal symbols for constants
-	NUM_FUNCTIONAL_SYMBOLS int // Number of functional symbols
 
 	// Terminal and functional symbols
 	// This slice is filled only by create_T_F() and its values are updated only by update_terminal_symbols().
-	// len(symbols) == NUM_VARIABLE_SYMBOLS+NUM_CONSTANT_SYMBOLS+NUM_FUNCTIONAL_SYMBOLS
+	// len(symbols) == NUM_FUNCTIONAL_SYMBOLS+NUM_VARIABLE_SYMBOLS+NUM_CONSTANT_SYMBOLS
+	// In this slice, first you find NUM_FUNCTIONAL_SYMBOLS symbols, then
+	// NUM_VARIABLE_SYMBOLS symbols, finally NUM_CONSTANT_SYMBOLS symbols
 	symbols = make([]*Symbol, 0)
 
 	set       []Instance // Store training and test instances
@@ -180,22 +182,64 @@ func read_config_file(path string) Config {
 	return config
 }
 
+// Reads the data from the training file and from the test file.
+func read_input_data(train_file, test_file string) {
+	in_f, err := os.Open(train_file)
+	if err != nil {
+		panic(err)
+	}
+	defer in_f.Close()
+	in_test_f, err := os.Open(test_file)
+	if err != nil {
+		panic(err)
+	}
+	defer in_test_f.Close()
+	in := bufio.NewScanner(in_f)
+	in.Split(bufio.ScanWords)
+	in_test := bufio.NewScanner(in_test_f)
+	in_test.Split(bufio.ScanWords)
+	nvar = atoi(next_token(in))
+	nvar_test = atoi(next_token(in_test))
+	nrow = atoi(next_token(in))
+	nrow_test = atoi(next_token(in_test))
+	set = make([]Instance, nrow+nrow_test)
+	for i := 0; i < nrow; i++ {
+		set[i].vars = make([]float64, nvar)
+		for j := 0; j < nvar; j++ {
+			set[i].vars[j] = atof(next_token(in))
+		}
+		set[i].y_value = atof(next_token(in))
+	}
+	for i := nrow; i < nrow+nrow_test; i++ {
+		set[i].vars = make([]float64, nvar)
+		for j := 0; j < nvar; j++ {
+			set[i].vars[j] = atof(next_token(in_test))
+		}
+		set[i].y_value = atof(next_token(in_test))
+	}
+}
+
 // create_T_F creates the terminal and functional sets
+// Names in created symbols shall not include the characters '(' or ')'
+// because they are used when reading and writing a tree to string
 func create_T_F() {
 	NUM_VARIABLE_SYMBOLS = nvar
 	NUM_FUNCTIONAL_SYMBOLS = 4
-	symbols = append(symbols, &Symbol{true, 2, 1, "+", 0})
-	symbols = append(symbols, &Symbol{true, 2, 2, "-", 0})
-	symbols = append(symbols, &Symbol{true, 2, 3, "*", 0})
-	symbols = append(symbols, &Symbol{true, 2, 4, "/", 0})
+	// Create functional symbols
+	symbols = append(symbols, &Symbol{true, 2, 0, "+", 0})
+	symbols = append(symbols, &Symbol{true, 2, 1, "-", 0})
+	symbols = append(symbols, &Symbol{true, 2, 2, "*", 0})
+	symbols = append(symbols, &Symbol{true, 2, 3, "/", 0})
+	// Create terminal symbols for variables
 	for i := NUM_FUNCTIONAL_SYMBOLS; i < NUM_VARIABLE_SYMBOLS+NUM_FUNCTIONAL_SYMBOLS; i++ {
 		str := fmt.Sprintf("x%d", i-NUM_FUNCTIONAL_SYMBOLS)
-		symbols = append(symbols, &Symbol{false, 0, i, str, 0})
+		symbols = append(symbols, &Symbol{false, i - NUM_FUNCTIONAL_SYMBOLS, i, str, 0})
 	}
+	// Create terminal symbols for constants
 	for i := NUM_VARIABLE_SYMBOLS + NUM_FUNCTIONAL_SYMBOLS; i < NUM_VARIABLE_SYMBOLS+NUM_FUNCTIONAL_SYMBOLS+NUM_CONSTANT_SYMBOLS; i++ {
 		a := config.min_random_constant + rand.Float64()*(config.max_random_constant-config.min_random_constant)
 		str := fmt.Sprintf("%f", a)
-		symbols = append(symbols, &Symbol{false, 0, i, str, a})
+		symbols = append(symbols, &Symbol{false, -1, i, str, a})
 	}
 }
 
@@ -374,6 +418,177 @@ func create_full_tree(depth int, parent *Node, max_depth int) *Node {
 	panic("Unreachable code was reached!")
 }
 
+// Return a string representing a tree (S-expr)
+// It requires update_terminal_symbols() to be called before writing
+func write_tree(el *Node) string {
+	println("Writing el:", el)
+	if el != nil {
+		println("  Symbol is:", el.root)
+	}
+	if el.root.isFunc {
+		out := "(" + el.root.name + " "
+		for i := 0; i < el.root.arity-1; i++ {
+			out += write_tree(el.children[i]) + " "
+		}
+		println("Got ", out, el.root.arity, len(el.children))
+		return out + write_tree(el.children[el.root.arity-1]) + ")"
+	} else {
+		return el.root.name
+		/*
+			if el.root.arity < 0 {
+				return fmt.Sprint(el.root.value)
+			} else {
+				return el.root.name
+			}
+		*/
+	}
+}
+
+// Search for the symbol with the given name, among symbols[start:end].
+// If found, returns a pointer to the symbol, else return nil
+func search_symbol(name string, start, end int) *Symbol {
+	for i := start; i < end; i++ {
+		if symbols[i].name == name {
+			return symbols[i]
+		}
+	}
+	return nil
+}
+
+// Try to search for the terminal symbol with the specified name
+// If it cannot be found, it is converted to float and added to the constant symbols.
+// If conversion cannot be made, returns nil
+func search_terminal_or_add(name string) *Symbol {
+	var sym *Symbol
+	// First search among terminal symbols
+	sym = search_symbol(name, NUM_FUNCTIONAL_SYMBOLS, len(symbols))
+	if sym != nil {
+		return sym // Was found
+	}
+	// If not found, try conversion to float
+	val, err := strconv.ParseFloat(name, 64)
+	if err != nil {
+		return nil // Not a float, must be a wrong variable or functional
+	}
+	// Conversion was successful, must be a constant
+	sym = &Symbol{false, -1, NUM_CONSTANT_SYMBOLS, name, val}
+	symbols = append(symbols, sym)
+	// Increase symbol count
+	NUM_CONSTANT_SYMBOLS++
+	return sym
+}
+
+// Parse a string and create a string from it
+func read_tree(sexpr string) *Node {
+	// Minimal cleaning
+	sexpr = strings.TrimSpace(sexpr)
+	// Convert to characters
+	str := []rune(sexpr)
+	if str[0] != '(' {
+		// This is a 0-depth tree, it must be a terminal
+		sym := search_terminal_or_add(sexpr)
+		if sym == nil {
+			panic("Invalid terminal") // It was not a valid terminal
+		}
+		// Return the node
+		return &Node{
+			root:     sym,
+			parent:   nil,
+			children: nil,
+		}
+	}
+
+	// Tree root to produce
+	var root *Node
+	// Status
+	level, token, in_token := 0, make([]rune, 0), false
+	for _, c := range sexpr {
+		switch {
+		case c == '(':
+			// A new sub-tree is starting
+			level++
+			in_token = false
+			// Prepare for a new sub-tree
+			root = &Node{
+				root:     nil,
+				parent:   root, // First ( will start the new tree
+				children: nil,
+			}
+		case c == ')':
+			// A token or expression was terminated
+			tok := strings.TrimSpace(string(token)) // Clean token string
+			token = make([]rune, 0)                 // Reset the buffer
+			level--                                 // Go down a level
+			in_token = false
+			if level < 0 {
+				break // Something's wrong
+			}
+			// If empty string, two )) happened or ) happened after spaces
+			if tok == "" {
+				print("Going up a level for free: current root is ", root.root.name)
+				// No token, but we are still closing a sub-tree
+				root = root.parent
+				println(" new root is: ", root)
+				continue // Continue with next token
+			}
+			println("Got token", tok)
+			// Search for the token
+			sym := search_terminal_or_add(tok)
+			if sym == nil {
+				panic("Unknown terminal: " + tok)
+			}
+			// Build a child for the current tree
+			node := &Node{
+				root:     sym,
+				parent:   root,
+				children: nil,
+			}
+			root.children = append(root.children, node)
+			println("Terminal added, child added")
+			// Check arity
+			if len(root.children) != root.root.arity {
+				panic(fmt.Sprintf("Wrong arity: expected %d children, got %d", root.root.arity, len(root.children)))
+			}
+			println("Correctly added", write_tree(root))
+			// Go back to parent
+			root = root.parent
+		case c == ' ' && in_token:
+			// A token terminated, process it
+			in_token = false
+			tok := strings.TrimSpace(string(token))
+			if root.root == nil {
+				// Search for functional with name string(token)
+				root.root = search_symbol(tok, 0, NUM_FUNCTIONAL_SYMBOLS)
+				if root.root == nil {
+					panic("Invalid functional: " + tok)
+				}
+			} else {
+				// Add the constant value to the symbols
+				sym := search_terminal_or_add(tok)
+				// Build a node for the tree
+				node := &Node{
+					root:     sym,
+					parent:   root,
+					children: nil,
+				}
+				root.children = append(root.children, node)
+			}
+			token = make([]rune, 0)
+		case c == ' ' && !in_token:
+			token = append(token, c)
+		case c != ' ' && !in_token:
+			in_token = true // A new token has started
+			token = append(token, c)
+		default:
+			// Ignore other cases
+		}
+	}
+	if level != 0 {
+		panic("Malformed expression")
+	}
+	return root
+}
+
 // Implements a protected division. If the denominator is equal to 0 the function returns 1 as a result of the division;
 func protected_division(num, den float64) float64 {
 	if den == 0 {
@@ -384,9 +599,9 @@ func protected_division(num, den float64) float64 {
 
 // Evaluates evaluates a tree.
 func eval(tree *Node) float64 {
-	if tree.root.symType {
+	if tree.root.isFunc {
 		if len(tree.children) != 2 {
-			println("Num children: ", len(tree.children), "for type", tree.root.symType, "and name", tree.root.name)
+			println("Num children: ", len(tree.children), "for type", tree.root.isFunc, "and name", tree.root.name)
 		}
 		switch tree.root.name {
 		case "+":
@@ -636,43 +851,6 @@ func update_tables() {
 func next_token(in *bufio.Scanner) string {
 	in.Scan()
 	return in.Text()
-}
-
-// Reads the data from the training file and from the test file.
-func read_input_data(train_file, test_file string) {
-	in_f, err := os.Open(train_file)
-	if err != nil {
-		panic(err)
-	}
-	defer in_f.Close()
-	in_test_f, err := os.Open(test_file)
-	if err != nil {
-		panic(err)
-	}
-	defer in_test_f.Close()
-	in := bufio.NewScanner(in_f)
-	in.Split(bufio.ScanWords)
-	in_test := bufio.NewScanner(in_test_f)
-	in_test.Split(bufio.ScanWords)
-	nvar = atoi(next_token(in))
-	nvar_test = atoi(next_token(in_test))
-	nrow = atoi(next_token(in))
-	nrow_test = atoi(next_token(in_test))
-	set = make([]Instance, nrow+nrow_test)
-	for i := 0; i < nrow; i++ {
-		set[i].vars = make([]float64, nvar)
-		for j := 0; j < nvar; j++ {
-			set[i].vars[j] = atof(next_token(in))
-		}
-		set[i].y_value = atof(next_token(in))
-	}
-	for i := nrow; i < nrow+nrow_test; i++ {
-		set[i].vars = make([]float64, nvar)
-		for j := 0; j < nvar; j++ {
-			set[i].vars[j] = atof(next_token(in_test))
-		}
-		set[i].y_value = atof(next_token(in_test))
-	}
 }
 
 // Compares the fitness of two solutions.
