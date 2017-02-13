@@ -25,6 +25,7 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -319,13 +320,26 @@ func create_ramped_pop(p *Population) {
 	}
 }
 
-// Creates a population using the method specified by the parameter
-func create_population(method int) *Population {
+// Create a new Population. It is possible to pass "seeds", which are
+// s-expressions to be parsed as starting individuals. If too many seeds
+// are provided (greater than config.population_size), it will panic.
+func NewPopulation(seeds ...string) *Population {
+	if len(seeds) > config.population_size {
+		panic("Too many seeds")
+	}
 	p := &Population{
 		individuals: make([]*Node, config.population_size),
-		num_ind:     0,
+		num_ind:     len(seeds),
 		fitness:     make([]float64, config.population_size),
 	}
+	for i := range seeds {
+		p.individuals[i] = read_tree(seeds[i])
+	}
+	return p
+}
+
+// Fills the population using the method specified by the parameter
+func initialize_population(p *Population, method int) {
 	switch method {
 	case 0:
 		create_grow_pop(p)
@@ -334,7 +348,6 @@ func create_population(method int) *Population {
 	default:
 		create_ramped_pop(p)
 	}
-	return p
 }
 
 // Creates a random tree with depth in the range [0;max_depth] and returning its root Node
@@ -848,6 +861,7 @@ func main() {
 	// Setup CLI interface
 	path_in := flag.String("train_file", "", "Path for the train file")
 	path_test := flag.String("test_file", "", "Path for the test file")
+	useModels := flag.Bool("models", false, "Enable initialization via models seeding")
 	rng_seed := flag.Int64("seed", time.Now().UnixNano(), "Specify a seed for the RNG (uses time by default)")
 
 	flag.Parse()
@@ -859,6 +873,23 @@ func main() {
 	if *path_test == "" {
 		fmt.Println("Please specify the test dataset using the -test_file option")
 		return
+	}
+
+	var modelSeeding []string
+	if *useModels && flag.NArg() == 0 {
+		fmt.Println("The -models argument requires you to specify the path of algorithms to run")
+		return
+	} else {
+		modelSeeding = make([]string, flag.NArg())
+		for i, modPath := range flag.Args() {
+			callArgs := strings.Split(modPath, " ")
+			cmd := exec.Command(callArgs[0], callArgs[1:]...)
+			out, err := cmd.Output()
+			if err != nil {
+				panic(err)
+			}
+			modelSeeding[i] = string(out)
+		}
 	}
 
 	executiontime := create_or_panic("execution_time.txt")
@@ -875,7 +906,8 @@ func main() {
 	rand.Seed(*rng_seed)
 	read_input_data(*path_in, *path_test)
 	create_T_F()
-	p := create_population(config.init_type)
+	p := NewPopulation(modelSeeding...)
+	initialize_population(p, config.init_type)
 	evaluate(p)
 	fmt.Fprintln(fitness_train, Myevaluate(p.individuals[p.index_best]))
 	fmt.Fprintln(fitness_test, Myevaluate_test(p.individuals[p.index_best]))
