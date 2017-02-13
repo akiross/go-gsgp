@@ -39,19 +39,22 @@ type Instance struct {
 
 // Config stores the parameters of a configuration.ini file
 type Config struct {
-	population_size        int     // Number of candidate solutions
-	max_number_generations int     // Number of generations of the GP algorithm
-	init_type              int     // Initialization method: 0 -> grow, 1 -> full, 2 -> ramped h&h
-	p_crossover            float64 // Crossover rate
-	p_mutation             float64 // Mutation rate
-	max_depth_creation     int     // Maximum depth of a newly created individual
-	tournament_size        int     // Size of the tournament selection
-	zero_depth             bool    // Are single-node individuals acceptable in initial population?
-	mutation_step          float64 // Step size for the geometric semantic mutation
-	num_random_constants   int     // Number of constants to be inserted in terminal set
-	min_random_constant    float64 // Minimum possible value for a random constant
-	max_random_constant    float64 // Maximum possible value for a random constant
-	minimization_problem   bool    // True if we are minimizing, false if maximizing
+	population_size        *int     // Number of candidate solutions
+	max_number_generations *int     // Number of generations of the GP algorithm
+	init_type              *int     // Initialization method: 0 -> grow, 1 -> full, 2 -> ramped h&h
+	p_crossover            *float64 // Crossover rate
+	p_mutation             *float64 // Mutation rate
+	max_depth_creation     *int     // Maximum depth of a newly created individual
+	tournament_size        *int     // Size of the tournament selection
+	zero_depth             *bool    // Are single-node individuals acceptable in initial population?
+	mutation_step          *float64 // Step size for the geometric semantic mutation
+	num_random_constants   *int     // Number of constants to be inserted in terminal set
+	min_random_constant    *float64 // Minimum possible value for a random constant
+	max_random_constant    *float64 // Maximum possible value for a random constant
+	minimization_problem   *bool    // True if we are minimizing, false if maximizing
+	path_in, path_test     *string
+	useModels              *bool
+	rng_seed               *int64
 }
 
 // Symbol represents a symbol of the set T (terminal symbols) or F (functional symbols).
@@ -83,7 +86,27 @@ type Population struct {
 type Semantic []float64
 
 var (
-	config = read_config_file("configuration.ini") // Current configuration values read from configuration.ini
+	// Create flag/configuration variables with default values (in case config file is missing)
+	config_file = flag.String("config", "configuration.ini", "Path of the configuration file")
+	config      = Config{
+		population_size:        flag.Int("population_size", 200, "Number of candidate solutions"),
+		max_number_generations: flag.Int("max_number_generations", 300, "Number of generations of the GP algorithm"),
+		init_type:              flag.Int("init_type", 2, "Initialization method: 0 -> grow, 1 -> full, 2 -> ramped h&h"),
+		p_crossover:            flag.Float64("p_crossover", 0.6, "Crossover rate"),
+		p_mutation:             flag.Float64("p_mutation", 0.3, "Mutation rate"),
+		max_depth_creation:     flag.Int("max_depth_creation", 6, "Maximum depth of a newly created individual"),
+		tournament_size:        flag.Int("tournament_size", 4, "Size of the tournament selection"),
+		zero_depth:             flag.Bool("zero_depth", false, "Are single-node individuals acceptable in initial population?"),
+		mutation_step:          flag.Float64("mutation_step", 1, "Step size for the geometric semantic mutation"),
+		num_random_constants:   flag.Int("num_random_constants", 0, "Number of constants to be inserted in terminal set"),
+		min_random_constant:    flag.Float64("min_random_constant", -100, "Minimum possible value for a random constant"),
+		max_random_constant:    flag.Float64("max_random_constant", 100, "Maximum possible value for a random constant"),
+		minimization_problem:   flag.Bool("minimization_problem", true, "True if we are minimizing, false if maximizing"),
+		path_in:                flag.String("train_file", "", "Path for the train file"),
+		path_test:              flag.String("test_file", "", "Path for the test file"),
+		useModels:              flag.Bool("models", false, "Enable initialization via models seeding"),
+		rng_seed:               flag.Int64("seed", time.Now().UnixNano(), "Specify a seed for the RNG (uses time by default)"),
+	}
 
 	NUM_FUNCTIONAL_SYMBOLS int // Number of functional symbols
 	NUM_VARIABLE_SYMBOLS   int // Number of terminal symbols for variables
@@ -115,6 +138,12 @@ var (
 	index_best int // Index of the best individual (where? sem_*?)
 )
 
+func init() {
+	// lettura qui così ci permette di usare un path diverso per il config file
+	// Read variables: if present in the config, they will override the defaults
+	read_config_file(*config_file)
+}
+
 func square_diff(a, b float64) float64 { return (a - b) * (a - b) }
 
 func atoi(s string) int {
@@ -134,53 +163,55 @@ func atof(s string) float64 {
 }
 
 // read_config_file returns a filled Config struct with values read in the specified file
-func read_config_file(path string) Config {
+func read_config_file(path string) {
 	file, err := os.Open(path)
 	if err != nil {
 		panic(err)
 	}
 	defer file.Close()
-	var config Config
 	input := bufio.NewScanner(file)
 	for input.Scan() {
 		fields := strings.Split(input.Text(), "=")
 		fields[0], fields[1] = strings.TrimSpace(fields[0]), strings.TrimSpace(fields[1])
 		switch strings.ToLower(fields[0]) {
 		case "population_size":
-			config.population_size = atoi(fields[1])
+			*config.population_size = atoi(fields[1])
 		case "max_number_generations":
-			config.max_number_generations = atoi(fields[1])
+			*config.max_number_generations = atoi(fields[1])
 		case "init_type":
-			config.init_type = atoi(fields[1])
+			*config.init_type = atoi(fields[1])
 		case "p_crossover":
-			config.p_crossover = atof(fields[1])
+			*config.p_crossover = atof(fields[1])
 		case "p_mutation":
-			config.p_mutation = atof(fields[1])
+			*config.p_mutation = atof(fields[1])
 		case "max_depth_creation":
-			config.max_depth_creation = atoi(fields[1])
+			*config.max_depth_creation = atoi(fields[1])
 		case "tournament_size":
-			config.tournament_size = atoi(fields[1])
+			*config.tournament_size = atoi(fields[1])
 		case "zero_depth":
-			config.zero_depth = atoi(fields[1]) == 1
+			*config.zero_depth = atoi(fields[1]) == 1
 		case "mutation_step":
-			config.mutation_step = atof(fields[1])
+			*config.mutation_step = atof(fields[1])
 		case "num_random_constants":
-			config.num_random_constants = atoi(fields[1])
-			NUM_CONSTANT_SYMBOLS = config.num_random_constants
+			*config.num_random_constants = atoi(fields[1])
+			NUM_CONSTANT_SYMBOLS = *config.num_random_constants
 		case "min_random_constant":
-			config.min_random_constant = atof(fields[1])
+			*config.min_random_constant = atof(fields[1])
 		case "max_random_constant":
-			config.max_random_constant = atof(fields[1])
+			*config.max_random_constant = atof(fields[1])
 		case "minimization_problem":
-			config.minimization_problem = atoi(fields[1]) == 1
+			*config.minimization_problem = atoi(fields[1]) == 1
+		case "train_file":
+			*config.path_in = fields[1]
+		case "test_file":
+			*config.path_test = fields[1]
 		default:
 			println("Read unknown parameter: ", fields[0])
 		}
-		if config.p_crossover < 0 || config.p_mutation < 0 || config.p_crossover+config.p_mutation > 1 {
+		if *config.p_crossover < 0 || *config.p_mutation < 0 || *config.p_crossover+*config.p_mutation > 1 {
 			panic("Crossover rate and mutation rate must be greater or equal to 0 and their sum must be smaller or equal to 1.")
 		}
 	}
-	return config
 }
 
 // Reads the data from the training file and from the test file.
@@ -238,7 +269,7 @@ func create_T_F() {
 	}
 	// Create terminal symbols for constants
 	for i := NUM_VARIABLE_SYMBOLS + NUM_FUNCTIONAL_SYMBOLS; i < NUM_VARIABLE_SYMBOLS+NUM_FUNCTIONAL_SYMBOLS+NUM_CONSTANT_SYMBOLS; i++ {
-		a := config.min_random_constant + rand.Float64()*(config.max_random_constant-config.min_random_constant)
+		a := *config.min_random_constant + rand.Float64()*(*config.max_random_constant-*config.min_random_constant)
 		str := fmt.Sprintf("%f", a)
 		symbols = append(symbols, &Symbol{false, -1, i, str, a})
 	}
@@ -265,8 +296,8 @@ func choose_terminal() int {
 
 // create_grow_pop creates a population using the grow method
 func create_grow_pop(p *Population) {
-	for p.num_ind < config.population_size {
-		node := create_grow_tree(0, nil, config.max_depth_creation)
+	for p.num_ind < *config.population_size {
+		node := create_grow_tree(0, nil, *config.max_depth_creation)
 		p.individuals[p.num_ind] = node
 		p.num_ind++
 	}
@@ -274,8 +305,8 @@ func create_grow_pop(p *Population) {
 
 // Creates a population of full trees (each tree has a depth equal to the maximum length possible)
 func create_full_pop(p *Population) {
-	for p.num_ind < config.population_size {
-		node := create_full_tree(0, nil, config.max_depth_creation)
+	for p.num_ind < *config.population_size {
+		node := create_full_tree(0, nil, *config.max_depth_creation)
 		p.individuals[p.num_ind] = node
 		p.num_ind++
 	}
@@ -284,17 +315,17 @@ func create_full_pop(p *Population) {
 // Creates a population with the ramped half and half algorithm.
 func create_ramped_pop(p *Population) {
 	var sub_pop, r, min_depth int
-	if !config.zero_depth {
-		sub_pop = (config.population_size - p.num_ind) / config.max_depth_creation
-		r = (config.population_size - p.num_ind) % config.max_depth_creation
+	if !*config.zero_depth {
+		sub_pop = (*config.population_size - p.num_ind) / *config.max_depth_creation
+		r = (*config.population_size - p.num_ind) % *config.max_depth_creation
 		min_depth = 1
 	} else {
-		sub_pop = (config.population_size - p.num_ind) / (config.max_depth_creation + 1)
-		r = (config.population_size - p.num_ind) % (config.max_depth_creation + 1)
+		sub_pop = (*config.population_size - p.num_ind) / (*config.max_depth_creation + 1)
+		r = (*config.population_size - p.num_ind) % (*config.max_depth_creation + 1)
 		min_depth = 0
 	}
-	for j := config.max_depth_creation; j >= min_depth; j-- {
-		if j < config.max_depth_creation {
+	for j := *config.max_depth_creation; j >= min_depth; j-- {
+		if j < *config.max_depth_creation {
 			for k := 0; k < int(math.Ceil(float64(sub_pop)*0.5)); k++ {
 				node := create_full_tree(0, nil, j)
 				p.individuals[p.num_ind] = node
@@ -324,13 +355,13 @@ func create_ramped_pop(p *Population) {
 // s-expressions to be parsed as starting individuals. If too many seeds
 // are provided (greater than config.population_size), it will panic.
 func NewPopulation(seeds ...string) *Population {
-	if len(seeds) > config.population_size {
+	if len(seeds) > *config.population_size {
 		panic("Too many seeds")
 	}
 	p := &Population{
-		individuals: make([]*Node, config.population_size),
+		individuals: make([]*Node, *config.population_size),
 		num_ind:     len(seeds),
-		fitness:     make([]float64, config.population_size),
+		fitness:     make([]float64, *config.population_size),
 	}
 	for i := range seeds {
 		p.individuals[i] = read_tree(seeds[i])
@@ -352,7 +383,7 @@ func initialize_population(p *Population, method int) {
 
 // Creates a random tree with depth in the range [0;max_depth] and returning its root Node
 func create_grow_tree(depth int, parent *Node, max_depth int) *Node {
-	if depth == 0 && !config.zero_depth {
+	if depth == 0 && !*config.zero_depth {
 		sym := symbols[choose_function()]
 		el := &Node{
 			root:     sym,
@@ -371,7 +402,7 @@ func create_grow_tree(depth int, parent *Node, max_depth int) *Node {
 			children: nil,
 		}
 	}
-	if depth > 0 && depth < max_depth || depth == 0 && config.zero_depth {
+	if depth > 0 && depth < max_depth || depth == 0 && *config.zero_depth {
 		if rand.Intn(2) == 0 {
 			sym := symbols[choose_function()]
 			el := &Node{
@@ -604,7 +635,7 @@ func evaluate(p *Population) {
 	p.index_best = 0
 	fit = append(fit, p.fitness[0])
 	fit_test = append(fit_test, Myevaluate_test(p.individuals[0]))
-	for i := 1; i < config.population_size; i++ {
+	for i := 1; i < *config.population_size; i++ {
 		p.fitness[i] = Myevaluate(p.individuals[i])
 		fit = append(fit, p.fitness[i])
 		fit_test = append(fit_test, Myevaluate_test(p.individuals[i]))
@@ -677,10 +708,10 @@ func update_terminal_symbols(i int) {
 // Implements a tournament selection procedure
 func tournament_selection() int {
 	// Select first participant
-	best_index := rand.Intn(config.population_size)
+	best_index := rand.Intn(*config.population_size)
 	// Pick best individual
-	for i := 1; i < config.tournament_size; i++ {
-		next := rand.Intn(config.population_size)
+	for i := 1; i < *config.tournament_size; i++ {
+		next := rand.Intn(*config.population_size)
 		if better(fit[next], fit[best_index]) {
 			best_index = next
 		}
@@ -709,7 +740,7 @@ func geometric_semantic_crossover(i int) {
 		p1 := tournament_selection()
 		p2 := tournament_selection()
 		// Generate a random tree and compute its semantic (train and test)
-		rt := create_grow_tree(0, nil, config.max_depth_creation)
+		rt := create_grow_tree(0, nil, *config.max_depth_creation)
 		sem_rt := Myevaluate_random(rt)
 		sem_rt_test := Myevaluate_random_test(rt)
 		// Compute the geometric semantic (train)
@@ -741,8 +772,8 @@ func geometric_semantic_crossover(i int) {
 func geometric_semantic_mutation(i int) {
 	if i != index_best {
 		// Replace the individual with a mutated version
-		rt1 := create_grow_tree(0, nil, config.max_depth_creation)
-		rt2 := create_grow_tree(0, nil, config.max_depth_creation)
+		rt1 := create_grow_tree(0, nil, *config.max_depth_creation)
+		rt2 := create_grow_tree(0, nil, *config.max_depth_creation)
 
 		sem_rt1 := Myevaluate_random(rt1)
 		sem_rt1_test := Myevaluate_random_test(rt1)
@@ -831,7 +862,7 @@ func next_token(in *bufio.Scanner) string {
 
 // Compares the fitness of two solutions.
 func better(f1, f2 float64) bool {
-	if config.minimization_problem {
+	if *config.minimization_problem {
 		return f1 < f2
 	} else {
 		return f1 > f2
@@ -858,31 +889,28 @@ func create_or_panic(path string) *os.File {
 }
 
 func main() {
-	// Setup CLI interface
-	path_in := flag.String("train_file", "", "Path for the train file")
-	path_test := flag.String("test_file", "", "Path for the test file")
-	useModels := flag.Bool("models", false, "Enable initialization via models seeding")
-	rng_seed := flag.Int64("seed", time.Now().UnixNano(), "Specify a seed for the RNG (uses time by default)")
-
+	// Parse CLI arguments: if they are set, they override config file
 	flag.Parse()
 
-	if *path_in == "" {
-		fmt.Println("Please specify the train dataset using the -train_file option")
+	if *config.path_in == "" {
+		fmt.Println("Please specify the train dataset using the train_file option")
 		return
 	}
-	if *path_test == "" {
-		fmt.Println("Please specify the test dataset using the -test_file option")
+	if *config.path_test == "" {
+		fmt.Println("Please specify the test dataset using the test_file option")
 		return
 	}
 
 	var modelSeeding []string
-	if *useModels && flag.NArg() == 0 {
+	if *config.useModels && flag.NArg() == 0 {
 		fmt.Println("The -models argument requires you to specify the path of algorithms to run")
 		return
 	} else {
+		fmt.Println("Obtaining models...")
 		modelSeeding = make([]string, flag.NArg())
 		for i, modPath := range flag.Args() {
 			callArgs := strings.Split(modPath, " ")
+			fmt.Println("Running", callArgs[0])
 			cmd := exec.Command(callArgs[0], callArgs[1:]...)
 			out, err := cmd.Output()
 			if err != nil {
@@ -903,11 +931,11 @@ func main() {
 	fitness_test := create_or_panic("fitnesstest.txt")
 	defer fitness_test.Close()
 	// Seed RNG
-	rand.Seed(*rng_seed)
-	read_input_data(*path_in, *path_test)
+	rand.Seed(*config.rng_seed)
+	read_input_data(*config.path_in, *config.path_test)
 	create_T_F()
 	p := NewPopulation(modelSeeding...)
-	initialize_population(p, config.init_type)
+	initialize_population(p, *config.init_type)
 	evaluate(p)
 	fmt.Fprintln(fitness_train, Myevaluate(p.individuals[p.index_best]))
 	fmt.Fprintln(fitness_test, Myevaluate_test(p.individuals[p.index_best]))
@@ -917,20 +945,20 @@ func main() {
 	fmt.Fprintln(executiontime, elapsedTime)
 
 	// main GP cycle
-	for num_gen := 0; num_gen < config.max_number_generations; num_gen++ {
+	for num_gen := 0; num_gen < *config.max_number_generations; num_gen++ {
 		var gen_start = time.Now()
 
 		fmt.Println("Generation", num_gen+1)
-		for k := 0; k < config.population_size; k++ {
+		for k := 0; k < *config.population_size; k++ {
 			rand_num := rand.Float64()
-			if rand_num < config.p_crossover {
+			if rand_num < *config.p_crossover {
 				geometric_semantic_crossover(k)
 			}
-			if rand_num >= config.p_crossover && rand_num < config.p_crossover+config.p_mutation {
+			if rand_num >= *config.p_crossover && rand_num < *config.p_crossover+*config.p_mutation {
 				reproduction(k)
 				geometric_semantic_mutation(k)
 			}
-			if rand_num >= config.p_crossover+config.p_mutation {
+			if rand_num >= *config.p_crossover+*config.p_mutation {
 				reproduction(k)
 			}
 		}
