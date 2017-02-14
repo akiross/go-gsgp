@@ -478,9 +478,7 @@ func create_full_tree(depth int, parent *Node, max_depth int) *Node {
 // Return a string representing a tree (S-expr)
 // It requires update_terminal_symbols() to be called before writing
 func write_tree(el *Node) string {
-	//println("Writing node", el, el.root)
 	if el.root.isFunc {
-		//println("Writing node", el.root.name, "with arity", el.root.arity, "and len children is", len(el.children))
 		out := "(" + el.root.name + " "
 		for i := 0; i < el.root.arity-1; i++ {
 			out += write_tree(el.children[i]) + " "
@@ -636,16 +634,16 @@ func eval(tree *Node) float64 {
 
 // Calculates the fitness of all the individuals and determines the best individual in the population
 // Evaluate is called once, after individuals have been initialized for the first time.
-// This function fills p.fitness and p.index_best using Myevaluate
+// This function fills p.fitness and p.index_best using semantic_evaluate
 func evaluate(p *Population) {
-	p.fitness[0] = Myevaluate(p.individuals[0])
+	p.fitness[0] = semantic_evaluate(p.individuals[0])
 	p.index_best = 0
 	fit = append(fit, p.fitness[0])
-	fit_test = append(fit_test, Myevaluate_test(p.individuals[0]))
+	fit_test = append(fit_test, semantic_evaluate_test(p.individuals[0]))
 	for i := 1; i < *config.population_size; i++ {
-		p.fitness[i] = Myevaluate(p.individuals[i])
+		p.fitness[i] = semantic_evaluate(p.individuals[i])
 		fit = append(fit, p.fitness[i])
-		fit_test = append(fit_test, Myevaluate_test(p.individuals[i]))
+		fit_test = append(fit_test, semantic_evaluate_test(p.individuals[i]))
 		if better(p.fitness[i], p.fitness[p.index_best]) {
 			p.index_best = i
 		}
@@ -654,7 +652,7 @@ func evaluate(p *Population) {
 
 // Calculates the training fitness of an individual (representing as a tree).
 // This function will append to sem_train_cases the semantic of the evaluated node.
-func Myevaluate(el *Node) float64 {
+func semantic_evaluate(el *Node) float64 {
 	var d float64
 	val := make(Semantic, 0)
 	for i := 0; i < nrow; i++ {
@@ -670,7 +668,7 @@ func Myevaluate(el *Node) float64 {
 
 // Calculates the test fitness of an individual (representing as a tree).
 // This function will append to sem_test_cases the semantic of the evaluated node.
-func Myevaluate_test(el *Node) float64 {
+func semantic_evaluate_test(el *Node) float64 {
 	var d float64
 	val := make(Semantic, 0)
 	for i := nrow; i < nrow+nrow_test; i++ {
@@ -685,7 +683,7 @@ func Myevaluate_test(el *Node) float64 {
 }
 
 // Calculates the semantics (considering training instances) of a randomly generated tree. The tree is used to perform the semantic geometric crossover or the geometric semantic mutation
-func Myevaluate_random(el *Node) Semantic {
+func semantic_evaluate_random(el *Node) Semantic {
 	sem := make(Semantic, 0)
 	for i := 0; i < nrow; i++ {
 		update_terminal_symbols(i)
@@ -695,7 +693,7 @@ func Myevaluate_random(el *Node) Semantic {
 }
 
 // Calculates the semantics (considering test instances) of a randomly generated tree. The tree is used to perform the semantic geometric crossover or the geometric semantic mutation
-func Myevaluate_random_test(el *Node) Semantic {
+func semantic_evaluate_random_test(el *Node) Semantic {
 	sem := make(Semantic, 0)
 	for i := nrow; i < nrow+nrow_test; i++ {
 		update_terminal_symbols(i)
@@ -748,8 +746,8 @@ func geometric_semantic_crossover(i int) {
 		p2 := tournament_selection()
 		// Generate a random tree and compute its semantic (train and test)
 		rt := create_grow_tree(0, nil, *config.max_depth_creation)
-		sem_rt := Myevaluate_random(rt)
-		sem_rt_test := Myevaluate_random_test(rt)
+		sem_rt := semantic_evaluate_random(rt)
+		sem_rt_test := semantic_evaluate_random_test(rt)
 		// Compute the geometric semantic (train)
 		val := make(Semantic, 0)
 		val_test := make(Semantic, 0)
@@ -782,10 +780,10 @@ func geometric_semantic_mutation(i int) {
 		rt1 := create_grow_tree(0, nil, *config.max_depth_creation)
 		rt2 := create_grow_tree(0, nil, *config.max_depth_creation)
 
-		sem_rt1 := Myevaluate_random(rt1)
-		sem_rt1_test := Myevaluate_random_test(rt1)
-		sem_rt2 := Myevaluate_random(rt2)
-		sem_rt2_test := Myevaluate_random_test(rt2)
+		sem_rt1 := semantic_evaluate_random(rt1)
+		sem_rt1_test := semantic_evaluate_random_test(rt1)
+		sem_rt2 := semantic_evaluate_random(rt2)
+		sem_rt2_test := semantic_evaluate_random_test(rt2)
 
 		mut_step := rand.Float64()
 
@@ -923,7 +921,8 @@ func main() {
 			if err != nil {
 				panic(err)
 			}
-			modelSeeding[i] = string(out)
+			modelSeeding[i] = strings.TrimSpace(string(out))
+			fmt.Println("Seeding population with:", modelSeeding[i])
 		}
 	}
 
@@ -944,8 +943,8 @@ func main() {
 	p := NewPopulation(modelSeeding...)
 	initialize_population(p, *config.init_type)
 	evaluate(p)
-	fmt.Fprintln(fitness_train, Myevaluate(p.individuals[p.index_best]))
-	fmt.Fprintln(fitness_test, Myevaluate_test(p.individuals[p.index_best]))
+	fmt.Fprintln(fitness_train, semantic_evaluate(p.individuals[p.index_best]))
+	fmt.Fprintln(fitness_test, semantic_evaluate_test(p.individuals[p.index_best]))
 	index_best = best_individual()
 
 	elapsedTime := time.Since(start) / time.Millisecond
