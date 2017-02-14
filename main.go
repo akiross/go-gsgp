@@ -1,7 +1,8 @@
 /* gsgp-go implements Geometric Semantic Genetic Programming
 
-    Code ported by Alessandro Re from the original by Mauro Castelli
-	The original code in C++ is available at http://gsgp.sf.net
+	Original C++ code from Mauro Castelli http://gsgp.sf.net
+
+	Go port and subsequent changes from Alessandro Re
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License as published by
