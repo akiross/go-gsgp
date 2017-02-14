@@ -534,8 +534,7 @@ func skip_spaces(str []rune) int {
 }
 
 func get_token(str []rune) ([]rune, int) {
-	p := 0
-	token := make([]rune, 0)
+	p, token := 0, make([]rune, 0)
 	for _, c := range str {
 		if unicode.IsSpace(c) || c == ')' {
 			break
@@ -547,16 +546,13 @@ func get_token(str []rune) ([]rune, int) {
 }
 
 func parse_tree(str []rune, level int) (*Node, int) {
-	//println(strings.Repeat("----", level+1) + " Parsing string: '" + string(str) + "'")
-	advance := 0
-	// Skip spaces
+	advance := 0 // Position in the str
 	advance += skip_spaces(str[advance:])
 	// Check if terminal or new subtree
 	if str[advance] != '(' {
 		// Iterate over str
 		token, a := get_token(str[advance:])
 		advance += a
-		//println("Collected terminal:", string(token), advance)
 		// We collected a terminal token
 		sym := search_terminal_or_add(string(token))
 		if sym == nil {
@@ -572,7 +568,6 @@ func parse_tree(str []rune, level int) (*Node, int) {
 	advance += skip_spaces(str[advance:])
 	token, a := get_token(str[advance:])
 	advance += a
-	//println("Collected symbol:", string(token))
 	// We collected a functional token
 	sym = search_symbol(string(token), 0, NUM_FUNCTIONAL_SYMBOLS)
 	if sym == nil {
@@ -581,7 +576,6 @@ func parse_tree(str []rune, level int) (*Node, int) {
 	// We know arity of the node, so we know how many nodes to get
 	node := &Node{sym, nil, nil}
 	for j := 0; j < sym.arity; j++ {
-		//println("Processing child", j) //, "in string :'"+string(str[advance:])+"'")
 		if advance >= len(str) {
 			panic("Malformed expression")
 		}
@@ -590,12 +584,10 @@ func parse_tree(str []rune, level int) (*Node, int) {
 		advance += a
 	}
 	advance += skip_spaces(str[advance:]) // Consume white spaces before )
-	//println("Done parsing children. String left: '" + string(str[advance:]) + "'")
-	// Consume closing brace
+	// There should be a closing )
 	for str[advance] != ')' {
 		panic("Unexpected character: " + string(str[advance]))
 	}
-	//println("Returning node:", write_tree(node))
 	return node, advance + 1 // Closing )
 }
 
@@ -603,118 +595,6 @@ func read_tree(sexpr string) *Node {
 	str := []rune(sexpr) // Convert to characters
 	node, _ := parse_tree(str, 0)
 	return node
-}
-
-// Parse a string and create a string from it
-func read_tree_old(sexpr string) *Node {
-	// Minimal cleaning
-	sexpr = strings.TrimSpace(sexpr)
-	// Convert to characters
-	str := []rune(sexpr)
-	if str[0] != '(' {
-		// This is a 0-depth tree, it must be a terminal
-		sym := search_terminal_or_add(sexpr)
-		if sym == nil {
-			panic("Invalid terminal") // It was not a valid terminal
-		}
-		// Return the node
-		return &Node{sym, nil, nil}
-	}
-
-	//print := func(...interface{}) {}
-	//println := func(...interface{}) {}
-
-	// Tree root to produce
-	var root *Node
-	// Status
-	token, in_token := make([]rune, 0), false
-	for _, c := range sexpr {
-		print("Read ", string(c), " ")
-		switch {
-		case c == '(': // A new sub-tree is starting
-			println("Opening sub-tree")
-			in_token = false
-			root = &Node{nil, root, nil} // Prepare for a new sub-tree
-		case c == ')' && !in_token:
-			print("Closing subtree outside token... ")
-			// A sub-tree was terminated, last token already parsed
-			if root.parent == nil { // If we are at the topmost level
-				println("Returning top level node")
-				println("Finished a subtree:", write_tree(root))
-				return root // Returning root will ignore trailing garbage
-			} else {
-				println("LV-UP. Cur parent:", root.parent.root.name, len(root.parent.children))
-				println("Node produced:", root.root.name, len(root.children))
-				// Add the closing tree as children
-				root.parent.children = append(root.parent.children, root)
-				root = root.parent // Go up one level
-				println("Finished a subtree:", write_tree(root))
-			}
-		case c == ')' && in_token:
-			// A token was terminated, and tree is ended
-			tok := strings.TrimSpace(string(token)) // Clean token string
-			token = make([]rune, 0)                 // Reset the buffer
-			in_token = false
-			print("Closing subtree in token. Got ", tok, "...")
-			// Search for the token
-			sym := search_terminal_or_add(tok)
-			if sym == nil {
-				panic("Unknown terminal: " + tok)
-			}
-			// Build a child for the current tree
-			node := &Node{sym, root, nil}
-			root.children = append(root.children, node)
-			// Check arity
-			if len(root.children) != root.root.arity {
-				panic(fmt.Sprintf("Wrong arity: %v expects %d children, got %d", root.root.name, root.root.arity, len(root.children)))
-			}
-			if root.parent != nil {
-				println("Appnd chld and going up 1lvl")
-				println("Created node:", node.root.name)
-				println("Current root:", root.root.name, len(root.children))
-				println("Current parent:", root.parent.root.name, len(root.parent.children))
-				// Add the closing tree as children
-				root.parent.children = append(root.parent.children, root)
-				// Go back to parent
-				root = root.parent
-				println("Finished a subtree, but still incomplete")
-			} else {
-				println("Returning top level node")
-				// We reached the maximum level
-				println("Finished a subtree:", write_tree(root))
-				return root // Returning root here will ignore trailing garbage
-			}
-		case c == ' ' && in_token:
-			// A token terminated, process it
-			in_token = false
-			tok := strings.TrimSpace(string(token))
-			print("Space in token. Got token:", tok, "...")
-			if root.root == nil {
-				// Search for functional with name string(token)
-				root.root = search_symbol(tok, 0, NUM_FUNCTIONAL_SYMBOLS)
-				if root.root == nil {
-					panic("Invalid functional: " + tok)
-				}
-				println("Found symbol with that name")
-			} else {
-				// Add the constant value to the symbols
-				sym := search_terminal_or_add(tok)
-				// Build a node for the tree
-				node := &Node{sym, root, nil}
-				root.children = append(root.children, node)
-				println("Added terminal")
-			}
-			token = make([]rune, 0)
-		case c == ' ' && !in_token:
-			//token = append(token, c)
-			println("Space outside token. Ignoring")
-		case c != ' ':
-			in_token = true // A new token has started
-			token = append(token, c)
-			println("Not a space. Building token:", string(token))
-		}
-	}
-	panic("Malformed expression")
 }
 
 // Implements a protected division. If the denominator is equal to 0 the function returns 1 as a result of the division;
