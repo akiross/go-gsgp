@@ -29,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Instance represent a single training/test instance in memory
@@ -216,6 +217,7 @@ func read_config_file(path string) {
 
 // Reads the data from the training file and from the test file.
 func read_input_data(train_file, test_file string) {
+	// Open files for reading
 	in_f, err := os.Open(train_file)
 	if err != nil {
 		panic(err)
@@ -226,13 +228,15 @@ func read_input_data(train_file, test_file string) {
 		panic(err)
 	}
 	defer in_test_f.Close()
+	// Build scanners to read one space-separated word at time
 	in := bufio.NewScanner(in_f)
 	in.Split(bufio.ScanWords)
 	in_test := bufio.NewScanner(in_test_f)
 	in_test.Split(bufio.ScanWords)
-	nvar = atoi(next_token(in))
+	// Read first two tokens of each file
+	nvar = atoi(next_token(in)) // Number of variables
 	nvar_test = atoi(next_token(in_test))
-	nrow = atoi(next_token(in))
+	nrow = atoi(next_token(in)) // Number of rows
 	nrow_test = atoi(next_token(in_test))
 	set = make([]Instance, nrow+nrow_test)
 	for i := 0; i < nrow; i++ {
@@ -256,12 +260,21 @@ func read_input_data(train_file, test_file string) {
 // because they are used when reading and writing a tree to string
 func create_T_F() {
 	NUM_VARIABLE_SYMBOLS = nvar
-	NUM_FUNCTIONAL_SYMBOLS = 4
 	// Create functional symbols
-	symbols = append(symbols, &Symbol{true, 2, 0, "+", 0})
-	symbols = append(symbols, &Symbol{true, 2, 1, "-", 0})
-	symbols = append(symbols, &Symbol{true, 2, 2, "*", 0})
-	symbols = append(symbols, &Symbol{true, 2, 3, "/", 0})
+	fs := []struct {
+		name  string
+		arity int
+	}{
+		{"+", 2},
+		{"-", 2},
+		{"*", 2},
+		{"/", 2},
+		{"sqrt", 1},
+	}
+	NUM_FUNCTIONAL_SYMBOLS = len(fs)
+	for i, s := range fs {
+		symbols = append(symbols, &Symbol{true, s.arity, i, s.name, 0})
+	}
 	// Create terminal symbols for variables
 	for i := NUM_FUNCTIONAL_SYMBOLS; i < NUM_VARIABLE_SYMBOLS+NUM_FUNCTIONAL_SYMBOLS; i++ {
 		str := fmt.Sprintf("x%d", i-NUM_FUNCTIONAL_SYMBOLS)
@@ -465,7 +478,9 @@ func create_full_tree(depth int, parent *Node, max_depth int) *Node {
 // Return a string representing a tree (S-expr)
 // It requires update_terminal_symbols() to be called before writing
 func write_tree(el *Node) string {
+	//println("Writing node", el, el.root)
 	if el.root.isFunc {
+		//println("Writing node", el.root.name, "with arity", el.root.arity, "and len children is", len(el.children))
 		out := "(" + el.root.name + " "
 		for i := 0; i < el.root.arity-1; i++ {
 			out += write_tree(el.children[i]) + " "
@@ -510,8 +525,88 @@ func search_terminal_or_add(name string) *Symbol {
 	return sym
 }
 
-// Parse a string and create a string from it
+func skip_spaces(str []rune) int {
+	p := 0
+	for unicode.IsSpace(str[p]) {
+		p++
+	}
+	return p
+}
+
+func get_token(str []rune) ([]rune, int) {
+	p := 0
+	token := make([]rune, 0)
+	for _, c := range str {
+		if unicode.IsSpace(c) || c == ')' {
+			break
+		}
+		token = append(token, c)
+		p++
+	}
+	return token, p
+}
+
+func parse_tree(str []rune, level int) (*Node, int) {
+	//println(strings.Repeat("----", level+1) + " Parsing string: '" + string(str) + "'")
+	advance := 0
+	// Skip spaces
+	advance += skip_spaces(str[advance:])
+	// Check if terminal or new subtree
+	if str[advance] != '(' {
+		// Iterate over str
+		token, a := get_token(str[advance:])
+		advance += a
+		//println("Collected terminal:", string(token), advance)
+		// We collected a terminal token
+		sym := search_terminal_or_add(string(token))
+		if sym == nil {
+			panic("Invalid terminal: " + string(token)) // It was not a valid terminal
+		}
+		// Return the node and how many characters we consumed
+		return &Node{sym, nil, nil}, advance
+	}
+	// If we start with a (, a new tree is started
+	// Search for a symbol
+	var sym *Symbol
+	advance++ // Consume the (
+	advance += skip_spaces(str[advance:])
+	token, a := get_token(str[advance:])
+	advance += a
+	//println("Collected symbol:", string(token))
+	// We collected a functional token
+	sym = search_symbol(string(token), 0, NUM_FUNCTIONAL_SYMBOLS)
+	if sym == nil {
+		panic("Invalid functional: " + string(token))
+	}
+	// We know arity of the node, so we know how many nodes to get
+	node := &Node{sym, nil, nil}
+	for j := 0; j < sym.arity; j++ {
+		//println("Processing child", j) //, "in string :'"+string(str[advance:])+"'")
+		if advance >= len(str) {
+			panic("Malformed expression")
+		}
+		child, a := parse_tree(str[advance:], level+1)
+		node.children = append(node.children, child)
+		advance += a
+	}
+	advance += skip_spaces(str[advance:]) // Consume white spaces before )
+	//println("Done parsing children. String left: '" + string(str[advance:]) + "'")
+	// Consume closing brace
+	for str[advance] != ')' {
+		panic("Unexpected character: " + string(str[advance]))
+	}
+	//println("Returning node:", write_tree(node))
+	return node, advance + 1 // Closing )
+}
+
 func read_tree(sexpr string) *Node {
+	str := []rune(sexpr) // Convert to characters
+	node, _ := parse_tree(str, 0)
+	return node
+}
+
+// Parse a string and create a string from it
+func read_tree_old(sexpr string) *Node {
 	// Minimal cleaning
 	sexpr = strings.TrimSpace(sexpr)
 	// Convert to characters
@@ -526,27 +621,41 @@ func read_tree(sexpr string) *Node {
 		return &Node{sym, nil, nil}
 	}
 
+	//print := func(...interface{}) {}
+	//println := func(...interface{}) {}
+
 	// Tree root to produce
 	var root *Node
 	// Status
 	token, in_token := make([]rune, 0), false
 	for _, c := range sexpr {
+		print("Read ", string(c), " ")
 		switch {
 		case c == '(': // A new sub-tree is starting
+			println("Opening sub-tree")
 			in_token = false
 			root = &Node{nil, root, nil} // Prepare for a new sub-tree
 		case c == ')' && !in_token:
+			print("Closing subtree outside token... ")
 			// A sub-tree was terminated, last token already parsed
 			if root.parent == nil { // If we are at the topmost level
+				println("Returning top level node")
+				println("Finished a subtree:", write_tree(root))
 				return root // Returning root will ignore trailing garbage
 			} else {
+				println("LV-UP. Cur parent:", root.parent.root.name, len(root.parent.children))
+				println("Node produced:", root.root.name, len(root.children))
+				// Add the closing tree as children
+				root.parent.children = append(root.parent.children, root)
 				root = root.parent // Go up one level
+				println("Finished a subtree:", write_tree(root))
 			}
 		case c == ')' && in_token:
 			// A token was terminated, and tree is ended
 			tok := strings.TrimSpace(string(token)) // Clean token string
 			token = make([]rune, 0)                 // Reset the buffer
 			in_token = false
+			print("Closing subtree in token. Got ", tok, "...")
 			// Search for the token
 			sym := search_terminal_or_add(tok)
 			if sym == nil {
@@ -557,40 +666,52 @@ func read_tree(sexpr string) *Node {
 			root.children = append(root.children, node)
 			// Check arity
 			if len(root.children) != root.root.arity {
-				panic(fmt.Sprintf("Wrong arity: expected %d children, got %d", root.root.arity, len(root.children)))
+				panic(fmt.Sprintf("Wrong arity: %v expects %d children, got %d", root.root.name, root.root.arity, len(root.children)))
 			}
 			if root.parent != nil {
+				println("Appnd chld and going up 1lvl")
+				println("Created node:", node.root.name)
+				println("Current root:", root.root.name, len(root.children))
+				println("Current parent:", root.parent.root.name, len(root.parent.children))
 				// Add the closing tree as children
 				root.parent.children = append(root.parent.children, root)
 				// Go back to parent
 				root = root.parent
+				println("Finished a subtree, but still incomplete")
 			} else {
+				println("Returning top level node")
 				// We reached the maximum level
+				println("Finished a subtree:", write_tree(root))
 				return root // Returning root here will ignore trailing garbage
 			}
 		case c == ' ' && in_token:
 			// A token terminated, process it
 			in_token = false
 			tok := strings.TrimSpace(string(token))
+			print("Space in token. Got token:", tok, "...")
 			if root.root == nil {
 				// Search for functional with name string(token)
 				root.root = search_symbol(tok, 0, NUM_FUNCTIONAL_SYMBOLS)
 				if root.root == nil {
 					panic("Invalid functional: " + tok)
 				}
+				println("Found symbol with that name")
 			} else {
 				// Add the constant value to the symbols
 				sym := search_terminal_or_add(tok)
 				// Build a node for the tree
 				node := &Node{sym, root, nil}
 				root.children = append(root.children, node)
+				println("Added terminal")
 			}
 			token = make([]rune, 0)
 		case c == ' ' && !in_token:
-			token = append(token, c)
+			//token = append(token, c)
+			println("Space outside token. Ignoring")
 		case c != ' ':
 			in_token = true // A new token has started
 			token = append(token, c)
+			println("Not a space. Building token:", string(token))
 		}
 	}
 	panic("Malformed expression")
@@ -607,9 +728,6 @@ func protected_division(num, den float64) float64 {
 // Evaluates evaluates a tree.
 func eval(tree *Node) float64 {
 	if tree.root.isFunc {
-		if len(tree.children) != 2 {
-			println("Num children: ", len(tree.children), "for type", tree.root.isFunc, "and name", tree.root.name)
-		}
 		switch tree.root.name {
 		case "+":
 			return eval(tree.children[0]) + eval(tree.children[1])
@@ -619,6 +737,15 @@ func eval(tree *Node) float64 {
 			return eval(tree.children[0]) * eval(tree.children[1])
 		case "/":
 			return protected_division(eval(tree.children[0]), eval(tree.children[1]))
+		case "sqrt":
+			v := eval(tree.children[0])
+			if v < 0 {
+				return math.Sqrt(-v)
+			} else {
+				return math.Sqrt(v)
+			}
+		case "^":
+			return math.Pow(eval(tree.children[0]), eval(tree.children[1]))
 		default:
 			panic("Undefined symbol: '" + tree.root.name + "'")
 		}
@@ -905,7 +1032,7 @@ func main() {
 	if *config.useModels && flag.NArg() == 0 {
 		fmt.Println("The -models argument requires you to specify the path of algorithms to run")
 		return
-	} else {
+	} else if *config.useModels {
 		fmt.Println("Obtaining models...")
 		modelSeeding = make([]string, flag.NArg())
 		for i, modPath := range flag.Args() {
