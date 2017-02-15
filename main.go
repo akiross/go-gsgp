@@ -1,5 +1,6 @@
 /* gsgp-go implements Geometric Semantic Genetic Programming
 
+
 	Original C++ code from Mauro Castelli http://gsgp.sf.net
 
 	Go port and subsequent changes from Alessandro Re
@@ -21,6 +22,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
 	"math"
@@ -913,8 +915,12 @@ func main() {
 		return
 	} else if *config.useModels {
 		fmt.Println("Obtaining models...")
-		modelSeeding = make([]string, flag.NArg())
-		for i, modPath := range flag.Args() {
+		modelSeeding = make([]string, 0)
+		for _, modPath := range flag.Args() {
+			// Provide train and test file paths if necessary (issue #6)
+			modPath = strings.Replace(modPath, "{train}", *config.path_in, -1)
+			modPath = strings.Replace(modPath, "{test}", *config.path_test, -1)
+			// Run the files
 			callArgs := strings.Split(modPath, " ")
 			fmt.Println("Running", callArgs[0])
 			cmd := exec.Command(callArgs[0], callArgs[1:]...)
@@ -922,8 +928,18 @@ func main() {
 			if err != nil {
 				panic(err)
 			}
-			modelSeeding[i] = strings.TrimSpace(string(out))
-			fmt.Println("Seeding population with:", modelSeeding[i])
+			// Process each row in the output (issue #5)
+			scanner := bufio.NewScanner(bytes.NewReader(out))
+			for scanner.Scan() {
+				line := strings.TrimSpace(scanner.Text())
+				if line != "" {
+					modelSeeding = append(modelSeeding, line)
+					fmt.Println("Seeding population with:", line)
+				}
+			}
+		}
+		if len(modelSeeding) > *config.population_size {
+			fmt.Println("WARNING: Population seeds are more than population size. Some will be discarded")
 		}
 	}
 
