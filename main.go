@@ -668,11 +668,17 @@ func evaluate(p *Population) {
 // This function will append to sem_train_cases the semantic of the evaluated node.
 func semantic_evaluate(el *Node) float64 {
 	var d float64
-	val := make(Semantic, 0)
+	val := make(Semantic, nrow)
+	ch := make(chan float64)
 	for i := 0; i < nrow; i++ {
-		res := eval(el, i) // Evaluate the element on the i-th instance
-		val = append(val, res)
-		d += square_diff(res, set[i].y_value)
+		go func(i int) {
+			res := eval(el, i) // Evaluate the element on the i-th instance
+			val[i] = res
+			ch <- square_diff(res, set[i].y_value)
+		}(i)
+	}
+	for i := 0; i < nrow; i++ {
+		d += <-ch
 	}
 	sem_train_cases = append(sem_train_cases, val)
 	d = d / float64(nrow)
