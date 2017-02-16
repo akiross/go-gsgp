@@ -117,7 +117,7 @@ var (
 	NUM_CONSTANT_SYMBOLS   int // Number of terminal symbols for constants
 
 	// Terminal and functional symbols
-	// This slice is filled only by create_T_F() and its values are updated only by update_terminal_symbols().
+	// This slice is filled only by create_T_F() and search_terminal_or_add()
 	// len(symbols) == NUM_FUNCTIONAL_SYMBOLS+NUM_VARIABLE_SYMBOLS+NUM_CONSTANT_SYMBOLS
 	// In this slice, first you find NUM_FUNCTIONAL_SYMBOLS symbols, then
 	// NUM_VARIABLE_SYMBOLS symbols, finally NUM_CONSTANT_SYMBOLS symbols
@@ -479,7 +479,6 @@ func create_full_tree(depth int, parent *Node, max_depth int) *Node {
 }
 
 // Return a string representing a tree (S-expr)
-// It requires update_terminal_symbols() to be called before writing
 func write_tree(el *Node) string {
 	if el.root.isFunc {
 		out := "(" + el.root.name + " "
@@ -606,32 +605,44 @@ func protected_division(num, den float64) float64 {
 	return num / den
 }
 
-// Evaluates evaluates a tree.
-func eval(tree *Node) float64 {
+// This function retrieves the value of a terminal symbol given
+// the i-th instance as input.
+func terminal_value(i int, sym *Symbol) float64 {
+	if sym.id >= NUM_FUNCTIONAL_SYMBOLS && sym.id < NUM_FUNCTIONAL_SYMBOLS+NUM_VARIABLE_SYMBOLS {
+		// Variables take their value from the input data
+		return set[i].vars[sym.id-NUM_FUNCTIONAL_SYMBOLS]
+	} else {
+		// The value of a constant can be used directly
+		return sym.value
+	}
+}
+
+// Evaluates evaluates a tree on the i-th input instance
+func eval(tree *Node, i int) float64 {
 	if tree.root.isFunc {
 		switch tree.root.name {
 		case "+":
-			return eval(tree.children[0]) + eval(tree.children[1])
+			return eval(tree.children[0], i) + eval(tree.children[1], i)
 		case "-":
-			return eval(tree.children[0]) - eval(tree.children[1])
+			return eval(tree.children[0], i) - eval(tree.children[1], i)
 		case "*":
-			return eval(tree.children[0]) * eval(tree.children[1])
+			return eval(tree.children[0], i) * eval(tree.children[1], i)
 		case "/":
-			return protected_division(eval(tree.children[0]), eval(tree.children[1]))
+			return protected_division(eval(tree.children[0], i), eval(tree.children[1], i))
 		case "sqrt":
-			v := eval(tree.children[0])
+			v := eval(tree.children[0], i)
 			if v < 0 {
 				return math.Sqrt(-v)
 			} else {
 				return math.Sqrt(v)
 			}
 		case "^":
-			return math.Pow(eval(tree.children[0]), eval(tree.children[1]))
+			return math.Pow(eval(tree.children[0], i), eval(tree.children[1], i))
 		default:
 			panic("Undefined symbol: '" + tree.root.name + "'")
 		}
 	} else {
-		return tree.root.value // Root points to a terminal
+		return terminal_value(i, tree.root) // Root points to a terminal
 	}
 }
 
@@ -659,8 +670,7 @@ func semantic_evaluate(el *Node) float64 {
 	var d float64
 	val := make(Semantic, 0)
 	for i := 0; i < nrow; i++ {
-		update_terminal_symbols(i) // Update the input variables to the i-th instance
-		res := eval(el)            // Evaluate the element on the i-th instance
+		res := eval(el, i) // Evaluate the element on the i-th instance
 		val = append(val, res)
 		d += square_diff(res, set[i].y_value)
 	}
@@ -675,8 +685,7 @@ func semantic_evaluate_test(el *Node) float64 {
 	var d float64
 	val := make(Semantic, 0)
 	for i := nrow; i < nrow+nrow_test; i++ {
-		update_terminal_symbols(i)
-		res := eval(el)
+		res := eval(el, i)
 		val = append(val, res)
 		d += square_diff(res, set[i].y_value)
 	}
@@ -689,8 +698,7 @@ func semantic_evaluate_test(el *Node) float64 {
 func semantic_evaluate_random(el *Node) Semantic {
 	sem := make(Semantic, 0)
 	for i := 0; i < nrow; i++ {
-		update_terminal_symbols(i)
-		sem = append(sem, eval(el))
+		sem = append(sem, eval(el, i))
 	}
 	return sem
 }
@@ -699,18 +707,9 @@ func semantic_evaluate_random(el *Node) Semantic {
 func semantic_evaluate_random_test(el *Node) Semantic {
 	sem := make(Semantic, 0)
 	for i := nrow; i < nrow+nrow_test; i++ {
-		update_terminal_symbols(i)
-		sem = append(sem, eval(el))
+		sem = append(sem, eval(el, i))
 	}
 	return sem
-}
-
-// Updates the value of the terminal (variable) symbols in a tree
-// Set the value of the terminal symbols to be the value of the independent variables in the dataset i-th row
-func update_terminal_symbols(i int) {
-	for j := 0; j < NUM_VARIABLE_SYMBOLS; j++ {
-		symbols[j+NUM_FUNCTIONAL_SYMBOLS].value = set[i].vars[j]
-	}
 }
 
 // Implements a tournament selection procedure
