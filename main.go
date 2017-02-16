@@ -689,11 +689,17 @@ func semantic_evaluate(el *Node) float64 {
 // This function will append to sem_test_cases the semantic of the evaluated node.
 func semantic_evaluate_test(el *Node) float64 {
 	var d float64
-	val := make(Semantic, 0)
+	val := make(Semantic, nrow_test)
+	ch := make(chan float64)
 	for i := nrow; i < nrow+nrow_test; i++ {
-		res := eval(el, i)
-		val = append(val, res)
-		d += square_diff(res, set[i].y_value)
+		go func(i int) {
+			res := eval(el, i)
+			val[i-nrow] = res
+			ch <- square_diff(res, set[i].y_value)
+		}(i)
+	}
+	for i := nrow; i < nrow+nrow_test; i++ {
+		d += <-ch
 	}
 	sem_test_cases = append(sem_test_cases, val)
 	d = d / float64(nrow_test)
@@ -702,18 +708,18 @@ func semantic_evaluate_test(el *Node) float64 {
 
 // Calculates the semantics (considering training instances) of a randomly generated tree. The tree is used to perform the semantic geometric crossover or the geometric semantic mutation
 func semantic_evaluate_random(el *Node) Semantic {
-	sem := make(Semantic, 0)
+	sem := make(Semantic, nrow)
 	for i := 0; i < nrow; i++ {
-		sem = append(sem, eval(el, i))
+		sem[i] = eval(el, i)
 	}
 	return sem
 }
 
 // Calculates the semantics (considering test instances) of a randomly generated tree. The tree is used to perform the semantic geometric crossover or the geometric semantic mutation
 func semantic_evaluate_random_test(el *Node) Semantic {
-	sem := make(Semantic, 0)
+	sem := make(Semantic, nrow_test)
 	for i := nrow; i < nrow+nrow_test; i++ {
-		sem = append(sem, eval(el, i))
+		sem[i-nrow] = eval(el, i)
 	}
 	return sem
 }
