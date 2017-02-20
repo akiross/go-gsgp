@@ -116,7 +116,11 @@ func TestTreeToString(t *testing.T) {
 
 	create_T_F()
 
-	t.Run("Malformed", testMalformed)
+	//t.Run("Malformed", testMalformed)
 	//t.Run("Read", testRead)
 	//t.Run("WriteAndRead", testWriteAndRead)
+}
+
+func TestIterativeEval(t *testing.T) {
+
 }

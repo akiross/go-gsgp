@@ -29,6 +29,8 @@ import (
 	"math/rand"
 	"os"
 	"os/exec"
+	"runtime"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"time"
@@ -111,6 +113,7 @@ var (
 		useModels:              flag.Bool("models", false, "Enable initialization via models seeding"),
 		rng_seed:               flag.Int64("seed", time.Now().UnixNano(), "Specify a seed for the RNG (uses time by default)"),
 	}
+	cpuprofile = flag.String("cpuprofile", "", "Write CPU profile to file")
 
 	NUM_FUNCTIONAL_SYMBOLS int // Number of functional symbols
 	NUM_VARIABLE_SYMBOLS   int // Number of terminal symbols for variables
@@ -463,19 +466,16 @@ func create_full_tree(depth int, parent *Node, max_depth int) *Node {
 			children: nil,
 		}
 	}
-	if depth > 0 && depth < max_depth {
-		sym := symbols[choose_function()]
-		el := &Node{
-			root:     sym,
-			parent:   parent,
-			children: make([]*Node, sym.arity),
-		}
-		for i := 0; i < sym.arity; i++ {
-			el.children[i] = create_full_tree(depth+1, el, max_depth)
-		}
-		return el
+	sym := symbols[choose_function()]
+	el := &Node{
+		root:     sym,
+		parent:   parent,
+		children: make([]*Node, sym.arity),
 	}
-	panic("Unreachable code was reached!")
+	for i := 0; i < sym.arity; i++ {
+		el.children[i] = create_full_tree(depth+1, el, max_depth)
+	}
+	return el
 }
 
 // Return a string representing a tree (S-expr)
@@ -617,27 +617,148 @@ func terminal_value(i int, sym *Symbol) float64 {
 	}
 }
 
+// This implementation is not faster! :(
+func eval_stack(tree *Node, i int) float64 {
+	var (
+		q = make(stackn, 0, 128) // A queue of nodes
+		r = make(stackb, 0, 128) // If nodes are ready to be processed
+		s = make(stackf, 0, 128) // Stack of values
+	)
+	// Populate queue first
+	q.push(tree)
+	r.push(false)     // This node is not ready to be computed, as its children are not evaluated
+	for len(q) != 0 { // Until we processed all nodes
+		n := q.top() // Get node to process, q[:len(q)-1] // Pop-out the node
+		if n.root.isFunc {
+			// By design, a node is processed just after the last of its children
+			// has been processed.
+			// We can keep a state "ready" to check when a node is ready to be computed
+			// Check if value for children has been computed
+			if r.pop() {
+				// Ready
+				switch n.root.name {
+				case "+":
+					s.push(s.pop() + s.pop())
+				case "-":
+					s.push(s.pop() - s.pop())
+				case "*":
+					s.push(s.pop() * s.pop())
+				case "/":
+					s.push(protected_division(s.pop(), s.pop()))
+				case "sqrt":
+					if s.top() < 0 {
+						s.push(math.Sqrt(-s.pop()))
+					} else {
+						s.push(math.Sqrt(s.pop()))
+					}
+				case "^":
+					s.push(math.Pow(s.pop(), s.pop()))
+				default:
+					panic("Undefined symbol: '" + n.root.name + "'")
+				}
+				q.pop()
+			} else {
+				// This node will be ready next time it's encountered
+				r.push(true)
+				// Push children to be evaluated
+				for _, c := range n.children {
+					q.push(c)
+					r.push(false) // Children are not ready
+				}
+			}
+		} else {
+			r.pop() // Discard ready value
+			q.pop()
+			s.push(terminal_value(i, n.root))
+		}
+	}
+	return s.top()
+}
+
+func eval_map(tree *Node, i int) float64 {
+	var (
+		q = make([]*Node, 0, 32)    // A queue of nodes
+		v = make(map[*Node]float64) // Values for each node
+	)
+	// Populate queue first
+	q = append(q, tree)
+	for len(q) != 0 { // Until we processed all nodes
+		n := q[len(q)-1] // Get node to process, q[:len(q)-1] // Pop-out the node
+		if n.root.isFunc {
+			// Check if value for children has been computed
+			// v[c] must be set for all children, or for none
+			if _, ok := v[n.children[0]]; ok {
+				switch n.root.name {
+				case "+":
+					v[n] = v[n.children[0]] + v[n.children[1]]
+				case "-":
+					v[n] = v[n.children[0]] - v[n.children[1]]
+				case "*":
+					v[n] = v[n.children[0]] * v[n.children[1]]
+				case "/":
+					v[n] = protected_division(v[n.children[0]], v[n.children[1]])
+				case "sqrt":
+					if v[n.children[0]] < 0 {
+						v[n] = math.Sqrt(-v[n.children[0]])
+					} else {
+						v[n] = math.Sqrt(v[n.children[0]])
+					}
+				case "^":
+					v[n] = math.Pow(v[n.children[0]], v[n.children[1]])
+				default:
+					panic("Undefined symbol: '" + n.root.name + "'")
+				}
+				q = q[:len(q)-1] // Dequeue
+			} else {
+				q = append(q, n.children...) // Enqueue children
+			}
+		} else {
+			v[n] = terminal_value(i, n.root)
+			q = q[:len(q)-1] // Dequeue
+		}
+	}
+	return v[tree]
+}
+
 // Evaluates evaluates a tree on the i-th input instance
 func eval(tree *Node, i int) float64 {
+	rv := eval_rec(tree, i)
+	/*
+		rm := eval_map(tree, i)
+		if rv != rm {
+			panic("Different results rv-rm")
+		}
+	*/
+	/*
+		rs := eval_stack(tree, i)
+		if rv != rs {
+			panic("Different results rv-rs")
+		}
+	*/
+	return rv
+}
+
+// BUG(akiross) this version is slow. Use a stack and make it recursive
+func eval_rec(tree *Node, i int) float64 {
 	if tree.root.isFunc {
 		switch tree.root.name {
 		case "+":
-			return eval(tree.children[0], i) + eval(tree.children[1], i)
+			return eval_rec(tree.children[0], i) + eval_rec(tree.children[1], i)
 		case "-":
-			return eval(tree.children[0], i) - eval(tree.children[1], i)
+			return eval_rec(tree.children[0], i) - eval_rec(tree.children[1], i)
 		case "*":
-			return eval(tree.children[0], i) * eval(tree.children[1], i)
+			return eval_rec(tree.children[0], i) * eval_rec(tree.children[1], i)
 		case "/":
-			return protected_division(eval(tree.children[0], i), eval(tree.children[1], i))
+			return protected_division(eval_rec(tree.children[0], i), eval_rec(tree.children[1], i))
 		case "sqrt":
-			v := eval(tree.children[0], i)
+			v := eval_rec(tree.children[0], i)
 			if v < 0 {
 				return math.Sqrt(-v)
 			} else {
 				return math.Sqrt(v)
 			}
 		case "^":
-			return math.Pow(eval(tree.children[0], i), eval(tree.children[1], i))
+			return math.Pow(eval_rec(tree.children[0], i), eval_rec(tree.children[1], i))
 		default:
 			panic("Undefined symbol: '" + tree.root.name + "'")
 		}
@@ -669,17 +790,18 @@ func evaluate(p *Population) {
 func semantic_evaluate(el *Node) float64 {
 	var d float64
 	val := make(Semantic, nrow)
-	ch := make(chan float64)
+	//ch := make(chan float64)
 	for i := 0; i < nrow; i++ {
-		go func(i int) {
-			res := eval(el, i) // Evaluate the element on the i-th instance
-			val[i] = res
-			ch <- square_diff(res, set[i].y_value)
-		}(i)
+		//go func(i int) {
+		res := eval(el, i) // Evaluate the element on the i-th instance
+		val[i] = res
+		d += square_diff(res, set[i].y_value)
+		//ch <- square_diff(res, set[i].y_value)
+		//}(i)
 	}
-	for i := 0; i < nrow; i++ {
-		d += <-ch
-	}
+	//for i := 0; i < nrow; i++ {
+	//d += <-ch
+	//}
 	sem_train_cases = append(sem_train_cases, val)
 	d = d / float64(nrow)
 	return d
@@ -690,17 +812,18 @@ func semantic_evaluate(el *Node) float64 {
 func semantic_evaluate_test(el *Node) float64 {
 	var d float64
 	val := make(Semantic, nrow_test)
-	ch := make(chan float64)
+	//ch := make(chan float64)
 	for i := nrow; i < nrow+nrow_test; i++ {
-		go func(i int) {
-			res := eval(el, i)
-			val[i-nrow] = res
-			ch <- square_diff(res, set[i].y_value)
-		}(i)
+		//go func(i int) {
+		res := eval(el, i)
+		val[i-nrow] = res
+		//ch <- square_diff(res, set[i].y_value)
+		d += square_diff(res, set[i].y_value)
+		//}(i)
 	}
-	for i := nrow; i < nrow+nrow_test; i++ {
-		d += <-ch
-	}
+	//for i := nrow; i < nrow+nrow_test; i++ {
+	//d += <-ch
+	//}
 	sem_test_cases = append(sem_test_cases, val)
 	d = d / float64(nrow_test)
 	return d
@@ -918,6 +1041,17 @@ func main() {
 	if *config.path_test == "" {
 		fmt.Println("Please specify the test dataset using the test_file option")
 		return
+	}
+
+	fmt.Println("NumCPU:", runtime.NumCPU())
+
+	if *cpuprofile != "" {
+		f, err := os.Create(*cpuprofile)
+		if err != nil {
+			panic(err)
+		}
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
 	}
 
 	var modelSeeding []string
