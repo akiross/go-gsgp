@@ -618,26 +618,26 @@ func terminal_value(i int, sym *Symbol) float64 {
 }
 
 // Evaluates evaluates a tree on the i-th input instance
-func eval_rec(tree *Node, i int) float64 {
+func eval(tree *Node, i int) float64 {
 	if tree.root.isFunc {
 		switch tree.root.name {
 		case "+":
-			return eval_rec(tree.children[0], i) + eval_rec(tree.children[1], i)
+			return eval(tree.children[0], i) + eval(tree.children[1], i)
 		case "-":
-			return eval_rec(tree.children[0], i) - eval_rec(tree.children[1], i)
+			return eval(tree.children[0], i) - eval(tree.children[1], i)
 		case "*":
-			return eval_rec(tree.children[0], i) * eval_rec(tree.children[1], i)
+			return eval(tree.children[0], i) * eval(tree.children[1], i)
 		case "/":
-			return protected_division(eval_rec(tree.children[0], i), eval_rec(tree.children[1], i))
+			return protected_division(eval(tree.children[0], i), eval(tree.children[1], i))
 		case "sqrt":
-			v := eval_rec(tree.children[0], i)
+			v := eval(tree.children[0], i)
 			if v < 0 {
 				return math.Sqrt(-v)
 			} else {
 				return math.Sqrt(v)
 			}
 		case "^":
-			return math.Pow(eval_rec(tree.children[0], i), eval_rec(tree.children[1], i))
+			return math.Pow(eval(tree.children[0], i), eval(tree.children[1], i))
 		default:
 			panic("Undefined symbol: '" + tree.root.name + "'")
 		}
