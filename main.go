@@ -697,18 +697,6 @@ func semantic_evaluate(el *Node) float64 {
 		for w := 0; w < nw; w++ {
 			d += <-ch
 		}
-		/*
-			for i := 0; i < nrow; i++ {
-				go func(i int) {
-					res := eval(el, i) // Evaluate the element on the i-th instance
-					val[i] = res
-					ch <- square_diff(res, set[i].y_value)
-				}(i)
-			}
-			for i := 0; i < nrow; i++ {
-				d += <-ch
-			}
-		*/
 	}
 	sem_train_cases = append(sem_train_cases, val)
 	d = d / float64(nrow)
@@ -746,18 +734,6 @@ func semantic_evaluate_test(el *Node) float64 {
 		for w := 0; w < nw; w++ {
 			d += <-ch
 		}
-		/*
-			for i := nrow; i < nrow+nrow_test; i++ {
-				go func(i int) {
-					res := eval(el, i)
-					val[i-nrow] = res
-					ch <- square_diff(res, set[i].y_value)
-				}(i)
-			}
-			for i := nrow; i < nrow+nrow_test; i++ {
-				d += <-ch
-			}
-		*/
 	}
 	sem_test_cases = append(sem_test_cases, val)
 	d = d / float64(nrow_test)
