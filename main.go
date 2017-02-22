@@ -37,7 +37,7 @@ import (
 	"unicode"
 )
 
-const use_goroutines_for_fitness = true
+const use_goroutines_for_fitness = false
 
 // Instance represent a single training/test instance in memory
 type Instance struct {
@@ -1002,8 +1002,6 @@ func create_or_panic(path string) *os.File {
 }
 
 func main() {
-	runtime.GOMAXPROCS(runtime.NumCPU())
-
 	// Parse CLI arguments: if they are set, they override config file
 	flag.Parse()
 
