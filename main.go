@@ -37,7 +37,7 @@ import (
 	"unicode"
 )
 
-const use_goroutines_for_fitness = false
+const use_goroutines_for_fitness = true
 
 // Instance represent a single training/test instance in memory
 type Instance struct {
@@ -861,7 +861,7 @@ func geometric_semantic_crossover(i int) {
 		val_test := make(Semantic, nrow_test)
 		for j := 0; j < nrow; j++ {
 			sigmoid := 1 / (1 + math.Exp(-sem_rt[j]))
-			val[i] = sem_train_cases[p1][j]*sigmoid + sem_train_cases[p2][j]*(1-sigmoid)
+			val[j] = sem_train_cases[p1][j]*sigmoid + sem_train_cases[p2][j]*(1-sigmoid)
 		}
 		sem_train_cases_new = append(sem_train_cases_new, val)
 		update_training_fitness(val, true)
