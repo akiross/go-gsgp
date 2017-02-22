@@ -276,8 +276,8 @@ func create_T_F() {
 		{"+", 2},
 		{"-", 2},
 		{"*", 2},
-		//{"/", 2},
-		//{"sqrt", 1},
+		{"/", 2},
+		{"sqrt", 1},
 	}
 	NUM_FUNCTIONAL_SYMBOLS = len(fs)
 	for i, s := range fs {
