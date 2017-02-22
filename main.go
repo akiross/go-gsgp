@@ -37,6 +37,8 @@ import (
 	"unicode"
 )
 
+const use_goroutines_for_fitness = true
+
 // Instance represent a single training/test instance in memory
 type Instance struct {
 	vars    []float64 // Values of the input (independent) variables
@@ -274,8 +276,8 @@ func create_T_F() {
 		{"+", 2},
 		{"-", 2},
 		{"*", 2},
-		{"/", 2},
-		{"sqrt", 1},
+		//{"/", 2},
+		//{"sqrt", 1},
 	}
 	NUM_FUNCTIONAL_SYMBOLS = len(fs)
 	for i, s := range fs {
@@ -669,18 +671,45 @@ func evaluate(p *Population) {
 func semantic_evaluate(el *Node) float64 {
 	var d float64
 	val := make(Semantic, nrow)
-	//ch := make(chan float64)
-	for i := 0; i < nrow; i++ {
-		//go func(i int) {
-		res := eval(el, i) // Evaluate the element on the i-th instance
-		val[i] = res
-		d += square_diff(res, set[i].y_value)
-		//ch <- square_diff(res, set[i].y_value)
-		//}(i)
+	if !use_goroutines_for_fitness {
+		for i := 0; i < nrow; i++ {
+			res := eval(el, i) // Evaluate the element on the i-th instance
+			val[i] = res
+			d += square_diff(res, set[i].y_value)
+		}
+	} else {
+		// Communication channel
+		ch := make(chan float64)
+		// Create some workers to work on chunks of rows
+		nw := runtime.NumCPU()
+		for w := 0; w < nw; w++ {
+			go func(id int) {
+				var wd float64
+				// Each worker uses a partition of the dataset
+				for i := id; i < nrow; i += nw {
+					res := eval(el, i)
+					val[i] = res
+					wd += square_diff(res, set[i].y_value)
+				}
+				ch <- wd // Send partial results
+			}(w)
+		}
+		for w := 0; w < nw; w++ {
+			d += <-ch
+		}
+		/*
+			for i := 0; i < nrow; i++ {
+				go func(i int) {
+					res := eval(el, i) // Evaluate the element on the i-th instance
+					val[i] = res
+					ch <- square_diff(res, set[i].y_value)
+				}(i)
+			}
+			for i := 0; i < nrow; i++ {
+				d += <-ch
+			}
+		*/
 	}
-	//for i := 0; i < nrow; i++ {
-	//d += <-ch
-	//}
 	sem_train_cases = append(sem_train_cases, val)
 	d = d / float64(nrow)
 	return d
@@ -691,18 +720,45 @@ func semantic_evaluate(el *Node) float64 {
 func semantic_evaluate_test(el *Node) float64 {
 	var d float64
 	val := make(Semantic, nrow_test)
-	//ch := make(chan float64)
-	for i := nrow; i < nrow+nrow_test; i++ {
-		//go func(i int) {
-		res := eval(el, i)
-		val[i-nrow] = res
-		//ch <- square_diff(res, set[i].y_value)
-		d += square_diff(res, set[i].y_value)
-		//}(i)
+	if !use_goroutines_for_fitness {
+		for i := nrow; i < nrow+nrow_test; i++ {
+			res := eval(el, i)
+			val[i-nrow] = res
+			d += square_diff(res, set[i].y_value)
+		}
+	} else {
+		// Communication channel
+		ch := make(chan float64)
+		// Create some workers to work on chunks of rows
+		nw := runtime.NumCPU()
+		for w := 0; w < nw; w++ {
+			go func(id int) {
+				var wd float64
+				// Each worker works on a separated share
+				for i := nrow + id; i < nrow+nrow_test; i += nw {
+					res := eval(el, i)
+					val[i-nrow] = res
+					wd += square_diff(res, set[i].y_value)
+				}
+				ch <- wd // Send partial results
+			}(w)
+		}
+		for w := 0; w < nw; w++ {
+			d += <-ch
+		}
+		/*
+			for i := nrow; i < nrow+nrow_test; i++ {
+				go func(i int) {
+					res := eval(el, i)
+					val[i-nrow] = res
+					ch <- square_diff(res, set[i].y_value)
+				}(i)
+			}
+			for i := nrow; i < nrow+nrow_test; i++ {
+				d += <-ch
+			}
+		*/
 	}
-	//for i := nrow; i < nrow+nrow_test; i++ {
-	//d += <-ch
-	//}
 	sem_test_cases = append(sem_test_cases, val)
 	d = d / float64(nrow_test)
 	return d
@@ -711,8 +767,26 @@ func semantic_evaluate_test(el *Node) float64 {
 // Calculates the semantics (considering training instances) of a randomly generated tree. The tree is used to perform the semantic geometric crossover or the geometric semantic mutation
 func semantic_evaluate_random(el *Node) Semantic {
 	sem := make(Semantic, nrow)
-	for i := 0; i < nrow; i++ {
-		sem[i] = eval(el, i)
+	if !use_goroutines_for_fitness {
+		for i := 0; i < nrow; i++ {
+			sem[i] = eval(el, i)
+		}
+	} else {
+		sc := make(chan bool) // Sync channel
+		// Create some workers to work on chunks of rows
+		nw := runtime.NumCPU()
+		for w := 0; w < nw; w++ {
+			go func(id int) {
+				// Each worker uses a partition of the dataset
+				for i := id; i < nrow; i += nw {
+					sem[i] = eval(el, i)
+				}
+				sc <- true
+			}(w)
+		}
+		for w := 0; w < nw; w++ {
+			<-sc
+		}
 	}
 	return sem
 }
@@ -720,8 +794,26 @@ func semantic_evaluate_random(el *Node) Semantic {
 // Calculates the semantics (considering test instances) of a randomly generated tree. The tree is used to perform the semantic geometric crossover or the geometric semantic mutation
 func semantic_evaluate_random_test(el *Node) Semantic {
 	sem := make(Semantic, nrow_test)
-	for i := nrow; i < nrow+nrow_test; i++ {
-		sem[i-nrow] = eval(el, i)
+	if !use_goroutines_for_fitness {
+		for i := nrow; i < nrow+nrow_test; i++ {
+			sem[i-nrow] = eval(el, i)
+		}
+	} else {
+		sc := make(chan bool) // Sync channel
+		// Create some workers to work on chunks of rows
+		nw := runtime.NumCPU()
+		for w := 0; w < nw; w++ {
+			go func(id int) {
+				// Each worker uses a partition of the dataset
+				for i := id + nrow; i < nrow+nrow_test; i += nw {
+					sem[i-nrow] = eval(el, i)
+				}
+				sc <- true
+			}(w)
+		}
+		for w := 0; w < nw; w++ {
+			<-sc
+		}
 	}
 	return sem
 }
@@ -765,18 +857,18 @@ func geometric_semantic_crossover(i int) {
 		sem_rt := semantic_evaluate_random(rt)
 		sem_rt_test := semantic_evaluate_random_test(rt)
 		// Compute the geometric semantic (train)
-		val := make(Semantic, 0)
-		val_test := make(Semantic, 0)
+		val := make(Semantic, nrow)
+		val_test := make(Semantic, nrow_test)
 		for j := 0; j < nrow; j++ {
 			sigmoid := 1 / (1 + math.Exp(-sem_rt[j]))
-			val = append(val, sem_train_cases[p1][j]*sigmoid+sem_train_cases[p2][j]*(1-sigmoid))
+			val[i] = sem_train_cases[p1][j]*sigmoid + sem_train_cases[p2][j]*(1-sigmoid)
 		}
 		sem_train_cases_new = append(sem_train_cases_new, val)
 		update_training_fitness(val, true)
 		// Compute the geometric semantic (test)
 		for j := 0; j < nrow_test; j++ {
 			sigmoid := 1 / (1 + math.Exp(-sem_rt_test[j]))
-			val_test = append(val_test, sem_test_cases[p1][j]*sigmoid+sem_test_cases[p2][j]*(1-sigmoid))
+			val_test[j] = sem_test_cases[p1][j]*sigmoid + sem_test_cases[p2][j]*(1-sigmoid)
 		}
 		sem_test_cases_new = append(sem_test_cases_new, val_test)
 		update_test_fitness(val_test, true)
@@ -910,6 +1002,8 @@ func create_or_panic(path string) *os.File {
 }
 
 func main() {
+	runtime.GOMAXPROCS(runtime.NumCPU())
+
 	// Parse CLI arguments: if they are set, they override config file
 	flag.Parse()
 
