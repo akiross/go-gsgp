@@ -62,6 +62,7 @@ type Config struct {
 	minimization_problem   *bool    // True if we are minimizing, false if maximizing
 	path_in, path_test     *string
 	useModels              *bool
+	useSemantics           *bool
 	rng_seed               *int64
 }
 
@@ -113,6 +114,7 @@ var (
 		path_in:                flag.String("train_file", "", "Path for the train file"),
 		path_test:              flag.String("test_file", "", "Path for the test file"),
 		useModels:              flag.Bool("models", false, "Enable initialization via models seeding"),
+		useSemantics:           flag.Bool("semantics", false, "Enable initialization via semantic seeding, instead of models"),
 		rng_seed:               flag.Int64("seed", time.Now().UnixNano(), "Specify a seed for the RNG (uses time by default)"),
 	}
 	cpuprofile = flag.String("cpuprofile", "", "Write CPU profile to file")
@@ -504,6 +506,20 @@ func search_symbol(name string, start, end int) *Symbol {
 	return nil
 }
 
+// Convert string with numeric constant into a symbol and add it to list
+func add_symbol(name string) *Symbol {
+	val, err := strconv.ParseFloat(name, 64)
+	if err != nil {
+		return nil // Not a float, must be a wrong variable or functional
+	}
+	// Conversion was successful, must be a constant
+	sym := &Symbol{false, -1, NUM_CONSTANT_SYMBOLS, name, val}
+	symbols = append(symbols, sym)
+	// Increase symbol count
+	NUM_CONSTANT_SYMBOLS++
+	return sym
+}
+
 // Try to search for the terminal symbol with the specified name
 // If it cannot be found, it is converted to float and added to the constant symbols.
 // If conversion cannot be made, returns nil
@@ -514,17 +530,8 @@ func search_terminal_or_add(name string) *Symbol {
 	if sym != nil {
 		return sym // Was found
 	}
-	// If not found, try conversion to float
-	val, err := strconv.ParseFloat(name, 64)
-	if err != nil {
-		return nil // Not a float, must be a wrong variable or functional
-	}
-	// Conversion was successful, must be a constant
-	sym = &Symbol{false, -1, NUM_CONSTANT_SYMBOLS, name, val}
-	symbols = append(symbols, sym)
-	// Increase symbol count
-	NUM_CONSTANT_SYMBOLS++
-	return sym
+	// If not found, add symbol
+	return add_symbol(name)
 }
 
 func skip_spaces(str []rune) int {
@@ -593,10 +600,47 @@ func parse_tree(str []rune, level int) (*Node, int) {
 	return node, advance + 1 // Closing )
 }
 
+// Parse an expression like (sem 1 2 3 4) into a Node containing the entire semantic
+// This Node is special as it has no corresponding symbol registered
+func parse_sem(str []rune) *Node {
+	advance := 0
+	advance += skip_spaces(str[advance:])
+	if str[advance] != '(' {
+		panic("Malformed expression")
+	}
+	advance++ // Consume (
+	token, a := get_token(str[advance:])
+	advance += a
+	if string(token) != "sem" {
+		panic("Invalid semantic")
+	}
+	node := &Node{nil, nil, nil}
+	for j := 0; j < nrow+nrow_test; j++ {
+		advance += skip_spaces(str[advance:])
+		token, a := get_token(str[advance:])
+		advance += a
+		sym := add_symbol(string(token))
+		node.children = append(node.children, &Node{sym, nil, nil})
+	}
+	advance += skip_spaces(str[advance:])
+	// There should be a closing )
+	for str[advance] != ')' {
+		panic("Unexpected character: " + string(str[advance]))
+	}
+	return node
+}
+
+// This function will parse the passed s-expression into a tree. If the current
+// configuration has useSemantics == true, then the s-expr is parsed into a list
+// which contains nrow+nrow_test float values
 func read_tree(sexpr string) *Node {
 	str := []rune(sexpr) // Convert to characters
-	node, _ := parse_tree(str, 0)
-	return node
+	if *config.useSemantics {
+		return parse_sem(str)
+	} else {
+		node, _ := parse_tree(str, 0)
+		return node
+	}
 }
 
 // Implements a protected division. If the denominator is equal to 0 the function returns 1 as a result of the division;
@@ -621,7 +665,11 @@ func terminal_value(i int, sym *Symbol) float64 {
 
 // Evaluates evaluates a tree on the i-th input instance
 func eval(tree *Node, i int) float64 {
-	if tree.root.isFunc {
+	switch {
+	case tree.root == nil:
+		// If root is nil, this tree has been created by parse_sem
+		return tree.children[i].root.value
+	case tree.root.isFunc:
 		switch tree.root.name {
 		case "+":
 			return eval(tree.children[0], i) + eval(tree.children[1], i)
@@ -643,7 +691,7 @@ func eval(tree *Node, i int) float64 {
 		default:
 			panic("Undefined symbol: '" + tree.root.name + "'")
 		}
-	} else {
+	default:
 		return terminal_value(i, tree.root) // Root points to a terminal
 	}
 }
@@ -1049,6 +1097,7 @@ func main() {
 	rand.Seed(*config.rng_seed)
 	read_input_data(*config.path_in, *config.path_test)
 	create_T_F()
+	// Create population and feed
 	p := NewPopulation(modelSeeding...)
 	initialize_population(p, *config.init_type)
 	evaluate(p)
@@ -1066,14 +1115,13 @@ func main() {
 		fmt.Println("Generation", num_gen+1)
 		for k := 0; k < *config.population_size; k++ {
 			rand_num := rand.Float64()
-			if rand_num < *config.p_crossover {
+			switch {
+			case rand_num < *config.p_crossover:
 				geometric_semantic_crossover(k)
-			}
-			if rand_num >= *config.p_crossover && rand_num < *config.p_crossover+*config.p_mutation {
+			case rand_num < *config.p_crossover+*config.p_mutation:
 				reproduction(k)
 				geometric_semantic_mutation(k)
-			}
-			if rand_num >= *config.p_crossover+*config.p_mutation {
+			default:
 				reproduction(k)
 			}
 		}
