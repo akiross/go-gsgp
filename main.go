@@ -22,19 +22,16 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"flag"
 	"fmt"
 	"math"
 	"math/rand"
 	"os"
-	"os/exec"
 	"runtime"
 	"runtime/pprof"
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 )
 
 const use_goroutines_for_fitness = true
@@ -61,8 +58,6 @@ type Config struct {
 	max_random_constant    *float64 // Maximum possible value for a random constant
 	minimization_problem   *bool    // True if we are minimizing, false if maximizing
 	path_in, path_test     *string
-	useModels              *bool
-	useSemantics           *bool
 	rng_seed               *int64
 }
 
@@ -113,8 +108,6 @@ var (
 		minimization_problem:   flag.Bool("minimization_problem", true, "True if we are minimizing, false if maximizing"),
 		path_in:                flag.String("train_file", "", "Path for the train file"),
 		path_test:              flag.String("test_file", "", "Path for the test file"),
-		useModels:              flag.Bool("models", false, "Enable initialization via models seeding"),
-		useSemantics:           flag.Bool("semantics", false, "Enable initialization via semantic seeding, instead of models"),
 		rng_seed:               flag.Int64("seed", time.Now().UnixNano(), "Specify a seed for the RNG (uses time by default)"),
 	}
 	cpuprofile = flag.String("cpuprofile", "", "Write CPU profile to file")
@@ -387,7 +380,7 @@ func NewPopulation(seeds ...string) *Population {
 		fitness:     make([]float64, *config.population_size),
 	}
 	for i := range seeds {
-		p.individuals[i] = read_tree(seeds[i])
+		p.individuals[i] = read_sem(seeds[i])
 	}
 	return p
 }
@@ -495,17 +488,6 @@ func write_tree(el *Node) string {
 	}
 }
 
-// Search for the symbol with the given name, among symbols[start:end].
-// If found, returns a pointer to the symbol, else return nil
-func search_symbol(name string, start, end int) *Symbol {
-	for i := start; i < end; i++ {
-		if symbols[i].name == name {
-			return symbols[i]
-		}
-	}
-	return nil
-}
-
 // Convert string with numeric constant into a symbol and add it to list
 func add_symbol(name string) *Symbol {
 	val, err := strconv.ParseFloat(name, 64)
@@ -520,127 +502,27 @@ func add_symbol(name string) *Symbol {
 	return sym
 }
 
-// Try to search for the terminal symbol with the specified name
-// If it cannot be found, it is converted to float and added to the constant symbols.
-// If conversion cannot be made, returns nil
-func search_terminal_or_add(name string) *Symbol {
-	var sym *Symbol
-	// First search among terminal symbols
-	sym = search_symbol(name, NUM_FUNCTIONAL_SYMBOLS, len(symbols))
-	if sym != nil {
-		return sym // Was found
+// Reads the file and returns a node that represents a semantic
+func read_sem(path string) *Node {
+	file, err := os.Open(path)
+	if err != nil {
+		panic(err)
 	}
-	// If not found, add symbol
-	return add_symbol(name)
-}
-
-func skip_spaces(str []rune) int {
-	p := 0
-	for unicode.IsSpace(str[p]) {
-		p++
-	}
-	return p
-}
-
-func get_token(str []rune) ([]rune, int) {
-	p, token := 0, make([]rune, 0)
-	for _, c := range str {
-		if unicode.IsSpace(c) || c == ')' {
-			break
-		}
-		token = append(token, c)
-		p++
-	}
-	return token, p
-}
-
-func parse_tree(str []rune, level int) (*Node, int) {
-	advance := 0 // Position in the str
-	advance += skip_spaces(str[advance:])
-	// Check if terminal or new subtree
-	if str[advance] != '(' {
-		// Iterate over str
-		token, a := get_token(str[advance:])
-		advance += a
-		// We collected a terminal token
-		sym := search_terminal_or_add(string(token))
-		if sym == nil {
-			panic("Invalid terminal: " + string(token)) // It was not a valid terminal
-		}
-		// Return the node and how many characters we consumed
-		return &Node{sym, nil, nil}, advance
-	}
-	// If we start with a (, a new tree is started
-	// Search for a symbol
-	var sym *Symbol
-	advance++ // Consume the (
-	advance += skip_spaces(str[advance:])
-	token, a := get_token(str[advance:])
-	advance += a
-	// We collected a functional token
-	sym = search_symbol(string(token), 0, NUM_FUNCTIONAL_SYMBOLS)
-	if sym == nil {
-		panic("Invalid functional: " + string(token))
-	}
-	// We know arity of the node, so we know how many nodes to get
-	node := &Node{sym, nil, nil}
-	for j := 0; j < sym.arity; j++ {
-		if advance >= len(str) {
-			panic("Malformed expression")
-		}
-		child, a := parse_tree(str[advance:], level+1)
-		node.children = append(node.children, child)
-		advance += a
-	}
-	advance += skip_spaces(str[advance:]) // Consume white spaces before )
-	// There should be a closing )
-	for str[advance] != ')' {
-		panic("Unexpected character: " + string(str[advance]))
-	}
-	return node, advance + 1 // Closing )
-}
-
-// Parse an expression like (sem 1 2 3 4) into a Node containing the entire semantic
-// This Node is special as it has no corresponding symbol registered
-func parse_sem(str []rune) *Node {
-	advance := 0
-	advance += skip_spaces(str[advance:])
-	if str[advance] != '(' {
-		panic("Malformed expression")
-	}
-	advance++ // Consume (
-	token, a := get_token(str[advance:])
-	advance += a
-	if string(token) != "sem" {
-		panic("Invalid semantic")
-	}
+	defer file.Close()
+	// Output node, has no symbol because it's a dummy node
 	node := &Node{nil, nil, nil}
-	for j := 0; j < nrow+nrow_test; j++ {
-		advance += skip_spaces(str[advance:])
-		token, a := get_token(str[advance:])
-		advance += a
-		sym := add_symbol(string(token))
+	// There should be one line for each train and test case
+	input := bufio.NewScanner(file)
+	var i int
+	for i = 0; input.Scan() && i < nrow+nrow_test; i++ {
+		s := input.Text()
+		sym := add_symbol(s)
 		node.children = append(node.children, &Node{sym, nil, nil})
 	}
-	advance += skip_spaces(str[advance:])
-	// There should be a closing )
-	for str[advance] != ')' {
-		panic("Unexpected character: " + string(str[advance]))
+	if i != nrow+nrow_test {
+		panic("Not enough values when reading semantic file")
 	}
 	return node
-}
-
-// This function will parse the passed s-expression into a tree. If the current
-// configuration has useSemantics == true, then the s-expr is parsed into a list
-// which contains nrow+nrow_test float values
-func read_tree(sexpr string) *Node {
-	str := []rune(sexpr) // Convert to characters
-	if *config.useSemantics {
-		return parse_sem(str)
-	} else {
-		node, _ := parse_tree(str, 0)
-		return node
-	}
 }
 
 // Implements a protected division. If the denominator is equal to 0 the function returns 1 as a result of the division;
@@ -1049,37 +931,12 @@ func main() {
 		defer pprof.StopCPUProfile()
 	}
 
-	var modelSeeding []string
-	if *config.useModels && flag.NArg() == 0 {
-		fmt.Println("The -models argument requires you to specify the path of algorithms to run")
-		return
-	} else if *config.useModels {
-		fmt.Println("Obtaining models...")
-		modelSeeding = make([]string, 0)
-		for _, modPath := range flag.Args() {
-			// Provide train and test file paths if necessary (issue #6)
-			modPath = strings.Replace(modPath, "{train}", *config.path_in, -1)
-			modPath = strings.Replace(modPath, "{test}", *config.path_test, -1)
-			// Run the files
-			callArgs := strings.Split(modPath, " ")
-			fmt.Println("Running", callArgs[0])
-			cmd := exec.Command(callArgs[0], callArgs[1:]...)
-			out, err := cmd.Output()
-			if err != nil {
-				panic(err)
-			}
-			// Process each row in the output (issue #5)
-			scanner := bufio.NewScanner(bytes.NewReader(out))
-			for scanner.Scan() {
-				line := strings.TrimSpace(scanner.Text())
-				if line != "" {
-					modelSeeding = append(modelSeeding, line)
-					fmt.Println("Seeding population with:", line)
-				}
-			}
-		}
-		if len(modelSeeding) > *config.population_size {
-			fmt.Println("WARNING: Population seeds are more than population size. Some will be discarded")
+	// If any extra argument is specified, it is considered as a seed file
+	var sem_seed []string
+	if flag.NArg() > 0 {
+		for _, path := range flag.Args() {
+			// TODO verify if file exist
+			sem_seed = append(sem_seed, path)
 		}
 	}
 
@@ -1098,7 +955,7 @@ func main() {
 	read_input_data(*config.path_in, *config.path_test)
 	create_T_F()
 	// Create population and feed
-	p := NewPopulation(modelSeeding...)
+	p := NewPopulation(sem_seed...)
 	initialize_population(p, *config.init_type)
 	evaluate(p)
 	fmt.Fprintln(fitness_train, semantic_evaluate(p.individuals[p.index_best]))
