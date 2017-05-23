@@ -20,10 +20,16 @@
 */
 package main
 
+// #cgo CFLAGS: -I/usr/local/cuda/include
+// #cgo LDFLAGS: -L/usr/local/cuda/lib64 -L/usr/lib64/nvidia-bumblebee -lcuda
+// #include <stdlib.h>
+import "C"
+
 import (
 	"bufio"
 	"flag"
 	"fmt"
+	cuda "github.com/akiross/go-cudart"
 	"math"
 	"math/rand"
 	"os"
@@ -32,6 +38,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unsafe"
 )
 
 const use_goroutines_for_fitness = true
@@ -908,6 +915,8 @@ func create_or_panic(path string) *os.File {
 }
 
 func main() {
+	runtime.LockOSThread() // For CUDA context
+
 	// Parse CLI arguments: if they are set, they override config file
 	flag.Parse()
 
@@ -940,6 +949,49 @@ func main() {
 		}
 	}
 
+	// Initialize CUDA environment
+	cuda.Init()
+	devs := cuda.GetDevices()
+	if true {
+		maj, min := cuda.GetNVRTCVersion()
+		fmt.Println("CUDA Driver Version:", cuda.GetVersion())
+		fmt.Println("NVRTC Version:", maj, min)
+		fmt.Println("CUDA Num devices:", cuda.GetDevicesCount())
+		fmt.Println("Compute devices")
+		for i, d := range devs {
+			fmt.Printf("Device %d: %s %v bytes of memory\n", i, d.Name, d.TotalMem)
+			mbx, mby, mbz := d.GetMaxBlockDim()
+			fmt.Println("Max block size:", mbx, mby, mbz)
+			mgx, mgy, mgz := d.GetMaxGridDim()
+			fmt.Println("Max grid size:", mgx, mgy, mgz)
+		}
+	}
+
+	// CUDA context is bound to a specific thread, therefore it is necessary to lock this
+	// goroutine to the current thread
+	runtime.LockOSThread()
+	// Create context and make it current
+	ctx := cuda.Create(devs[0], 0)
+	runtime.SetFinalizer(ctx, func(interface{}) { fmt.Println("FINALIZER FOR CTX called!") })
+	//defer ctx.Destroy() // When done
+	//ctx.SetCurrent()
+	fmt.Println("Context API version:", ctx.GetApiVersion())
+
+	prog := cuda.CreateProgram(cuda.Source{`
+extern "C" __global__
+void somma(int *a, int *b, int *c, int *len) {
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	if (i < *len)
+		c[i] = a[i] + b[i];
+}`, "somma"}, nil)
+	prog.Compile(nil)
+
+	mod := cuda.CreateModule()
+	mod.LoadData(prog)
+	kernel := mod.GetFunction("somma")
+
+	fmt.Println("CUDA initialized successfully")
+
 	executiontime := create_or_panic("execution_time.txt")
 	defer executiontime.Close()
 
@@ -954,6 +1006,45 @@ func main() {
 	rand.Seed(*config.rng_seed)
 	read_input_data(*config.path_in, *config.path_test)
 	create_T_F()
+
+	fmt.Println("CUDA ctx sync...")
+	ctx.Synchronize()
+	fmt.Println("Synched")
+
+	// Allocate memory for storing semantic data
+	cuda_data_size := C.size_t(nrow + nrow_test)
+	hlen := (*[1]C.int)(C.malloc(C.sizeof_int)) // Number of elements
+	defer C.free(unsafe.Pointer(&hlen[0]))
+	ha := (*[1 << 30]C.int)(C.malloc(C.sizeof_int * cuda_data_size))
+	defer C.free(unsafe.Pointer(&ha[0]))
+	hb := (*[1 << 30]C.int)(C.malloc(C.sizeof_int * cuda_data_size))
+	defer C.free(unsafe.Pointer(&hb[0]))
+	hc := (*[1 << 30]C.int)(C.malloc(C.sizeof_int * cuda_data_size))
+	defer C.free(unsafe.Pointer(&hc[0]))
+
+	for i := 0; i < int(cuda_data_size); i++ {
+		ha[i] = C.int(i + 1)
+		hb[i] = C.int(10000 - i*i)
+		hc[i] = -1
+	}
+
+	dlen := cuda.NewBuffer(C.sizeof_int)
+	da := cuda.NewBuffer(int(C.sizeof_int * cuda_data_size))
+	db := cuda.NewBuffer(int(C.sizeof_int * cuda_data_size))
+	dc := cuda.NewBuffer(int(C.sizeof_int * cuda_data_size))
+
+	dlen.FromHost(unsafe.Pointer(&hlen[0]))
+	da.FromHost(unsafe.Pointer(&ha[0]))
+	db.FromHost(unsafe.Pointer(&hb[0]))
+
+	tpb := 256 // Get this from attr
+	bpg := (nrow + nrow_test + tpb - 1) / tpb
+	kernel.Launch1D(bpg, tpb, 0, da, db, dc, dlen)
+
+	dc.FromDevice(unsafe.Pointer(&hc[0]))
+
+	fmt.Println("CUDA compute done")
+
 	// Create population and feed
 	p := NewPopulation(sem_seed...)
 	initialize_population(p, *config.init_type)
@@ -992,4 +1083,7 @@ func main() {
 		elapsedTime += time.Since(gen_start) / time.Millisecond
 		fmt.Fprintln(executiontime, elapsedTime)
 	}
+
+	//runtime.KeepAlive(ctx)
+	ctx.Destroy() // When done
 }
