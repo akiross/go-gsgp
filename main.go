@@ -29,7 +29,6 @@ import (
 	"math/rand"
 	"os"
 	"os/exec"
-	"reflect"
 	"runtime"
 	"runtime/pprof"
 	"strconv"
@@ -135,25 +134,15 @@ var (
 	nrow_test int        // Number of rows (instances) in test dataset
 	nvar_test int        // Number of input variables (columns excluding target) in test dataset FIXME unused
 
-	fit          = make([]float64, 0) // Training fitness values at generation g
-	fit_test     = make([]float64, 0) // Test fitness values at generation g
-	fit_new      = make([]float64, 0) // Training fitness values at current generation g+1
-	fit_new_test = make([]float64, 0) // Test fitness values at current generation g+1
+	s_fit          []float64 // Training fitness values at generation g
+	s_fit_test     []float64 // Test fitness values at generation g
+	s_fit_new      []float64 // Training fitness values at current generation g+1
+	s_fit_test_new []float64 // Test fitness values at current generation g+1
 
-	s_fit          []float64
-	s_fit_test     []float64
-	s_fit_new      []float64
-	s_fit_test_new []float64
-
-	s_sem_train_cases     []Semantic
-	s_sem_train_cases_new []Semantic
-	s_sem_test_cases      []Semantic
-	s_sem_test_cases_new  []Semantic
-
-	sem_train_cases     = make([]Semantic, 0) // Semantics of the population, computed on training set, at generation g
-	sem_train_cases_new = make([]Semantic, 0) // Semantics of the population, computed on training set, at current generation g+1
-	sem_test_cases      = make([]Semantic, 0) // Semantics of the population, computed on test set, at generation g
-	sem_test_cases_new  = make([]Semantic, 0) // Semantics of the population, computed on test set, at current generation g+1
+	s_sem_train_cases     []Semantic // Semantics of the population, computed on training set, at generation g
+	s_sem_train_cases_new []Semantic // Semantics of the population, computed on training set, at current generation g+1
+	s_sem_test_cases      []Semantic // Semantics of the population, computed on test set, at generation g
+	s_sem_test_cases_new  []Semantic // Semantics of the population, computed on test set, at current generation g+1
 
 	index_best int // Index of the best individual (where? sem_*?)
 )
@@ -747,28 +736,20 @@ void kernel_%s() {
 func evaluate(p *Population) {
 	f, s := semantic_evaluate(p.individuals[0], nrow, 0)
 	s_fit[0] = f
-	fit = append(fit, f)
 	copy(s_sem_train_cases[0], s)
-	sem_train_cases = append(sem_train_cases, s)
 
 	f, s = semantic_evaluate(p.individuals[0], nrow_test, nrow)
 	s_fit_test[0] = f
-	fit_test = append(fit_test, f)
 	copy(s_sem_test_cases[0], s)
-	sem_test_cases = append(sem_test_cases, s)
 
 	for i := 1; i < *config.population_size; i++ {
 		f, s = semantic_evaluate(p.individuals[i], nrow, 0)
 		s_fit[i] = f
-		fit = append(fit, f)
 		copy(s_sem_train_cases[i], s)
-		sem_train_cases = append(sem_train_cases, s)
 
 		f, s = semantic_evaluate(p.individuals[i], nrow_test, nrow)
 		s_fit_test[i] = f
-		fit_test = append(fit_test, f)
 		copy(s_sem_test_cases[i], s)
-		sem_test_cases = append(sem_test_cases, s)
 	}
 }
 
@@ -842,7 +823,7 @@ func tournament_selection() int {
 	// Pick best individual
 	for i := 1; i < *config.tournament_size; i++ {
 		next := rand.Intn(*config.population_size)
-		if better(fit[next], fit[best_index]) {
+		if better(s_fit[next], s_fit[best_index]) {
 			best_index = next
 		}
 	}
@@ -864,12 +845,6 @@ func reproduction(i int) {
 	s_fit_new[old_i] = s_fit[i]
 	copy(s_sem_test_cases_new[old_i], s_sem_test_cases[i])
 	s_fit_test_new[old_i] = s_fit_test[i]
-
-	// Copy fitness and semantics of the selected individual
-	sem_train_cases_new = append(sem_train_cases_new, append(Semantic{}, sem_train_cases[i]...))
-	fit_new = append(fit_new, fit[i])
-	sem_test_cases_new = append(sem_test_cases_new, append(Semantic{}, sem_test_cases[i]...))
-	fit_new_test = append(fit_new_test, fit_test[i])
 }
 
 // Performs a geometric semantic crossover
@@ -884,41 +859,26 @@ func geometric_semantic_crossover(i int) {
 		sem_rt_test := semantic_evaluate_random(rt, nrow_test, nrow)
 		// Compute the geometric semantic (train)
 		s_val := make(Semantic, nrow)
-		s_val_test := make(Semantic, nrow_test)
-		val := make(Semantic, nrow)
-		val_test := make(Semantic, nrow_test)
 		for j := 0; j < nrow; j++ {
 			sigmoid := 1 / (1 + math.Exp(-sem_rt[j]))
-			val[j] = sem_train_cases[p1][j]*sigmoid + sem_train_cases[p2][j]*(1-sigmoid)
 			s_val[j] = s_sem_train_cases[p1][j]*sigmoid + s_sem_train_cases[p2][j]*(1-sigmoid)
 		}
 		copy(s_sem_train_cases_new[i], s_val)
-		sem_train_cases_new = append(sem_train_cases_new, val)
-		//update_training_fitness(val, true)
-		fit_new = append(fit_new, fitness_of_semantic(val, nrow, 0))
 		s_fit_new[i] = fitness_of_semantic(s_val, nrow, 0)
 		// Compute the geometric semantic (test)
+		s_val_test := make(Semantic, nrow_test)
 		for j := 0; j < nrow_test; j++ {
 			sigmoid := 1 / (1 + math.Exp(-sem_rt_test[j]))
-			val_test[j] = sem_test_cases[p1][j]*sigmoid + sem_test_cases[p2][j]*(1-sigmoid)
 			s_val_test[j] = s_sem_test_cases[p1][j]*sigmoid + s_sem_test_cases[p2][j]*(1-sigmoid)
 		}
 		copy(s_sem_test_cases_new[i], s_val_test)
-		sem_test_cases_new = append(sem_test_cases_new, val_test)
-		//update_test_fitness(val_test, true)
-		fit_new_test = append(fit_new_test, fitness_of_semantic(val_test, nrow_test, nrow))
 		s_fit_test_new[i] = fitness_of_semantic(s_val_test, nrow_test, nrow)
 	} else {
+		// The best individual will not be changed
 		copy(s_sem_train_cases_new[i], s_sem_train_cases[i])
 		copy(s_sem_test_cases_new[i], s_sem_test_cases[i])
 		s_fit_new[i] = s_fit[i]
 		s_fit_test_new[i] = s_fit_test[i]
-
-		// The best individual will not be changed
-		sem_train_cases_new = append(sem_train_cases_new, append(Semantic{}, sem_train_cases[i]...))
-		fit_new = append(fit_new, fit[i])
-		sem_test_cases_new = append(sem_test_cases_new, append(Semantic{}, sem_test_cases[i]...))
-		fit_new_test = append(fit_new_test, fit_test[i])
 	}
 }
 
@@ -940,35 +900,16 @@ func geometric_semantic_mutation(i int) {
 			sigmoid1 := 1 / (1 + math.Exp(-sem_rt1[j]))
 			sigmoid2 := 1 / (1 + math.Exp(-sem_rt2[j]))
 			s_sem_train_cases_new[i][j] += mut_step * (sigmoid1 - sigmoid2)
-			sem_train_cases_new[i][j] = sem_train_cases_new[i][j] + mut_step*(sigmoid1-sigmoid2)
 		}
-		//update_training_fitness(sem_train_cases_new[i], false)
 		s_fit_new[i] = fitness_of_semantic(s_sem_train_cases_new[i], nrow, 0)
-		fit_new[len(fit_new)-1] = fitness_of_semantic(sem_train_cases_new[i], nrow, 0)
 		for j := 0; j < nrow_test; j++ {
 			sigmoid1 := 1 / (1 + math.Exp(-sem_rt1_test[j]))
 			sigmoid2 := 1 / (1 + math.Exp(-sem_rt2_test[j]))
 			s_sem_test_cases_new[i][j] += mut_step * (sigmoid1 - sigmoid2)
-			sem_test_cases_new[i][j] = sem_test_cases_new[i][j] + mut_step*(sigmoid1-sigmoid2)
 		}
-		//update_test_fitness(sem_test_cases_new[i], false)
 		s_fit_test_new[i] = fitness_of_semantic(s_sem_test_cases_new[i], nrow_test, nrow)
-		fit_new_test[len(fit_new_test)-1] = fitness_of_semantic(sem_test_cases_new[i], nrow_test, nrow)
-	} else {
-		/*
-			// Why mutation adds a new individual instead of replacing? ASK MAURO TODO FIXME XXX XXX XXX XXX XXX XXX XXX XXX XXX XXX XXX
-			copy(s_sem_train_cases_new[i], s_sem_train_cases[i])
-			copy(s_sem_test_cases_new[i], s_sem_test_cases[i])
-			s_fit_new[i] = s_fit[i]
-			s_fit_test_new[i] = s_fit_test[i]
-			// The best individual will not be changed
-			sem_train_cases_new = append(sem_train_cases_new, sem_train_cases[i])
-			fit_new = append(fit_new, fit[i])
-			sem_test_cases_new = append(sem_test_cases_new, sem_test_cases[i])
-			fit_new_test = append(fit_new_test, fit_test[i])
-			// Check indici devono essere uguali
-		*/
 	}
+	// Mutation happens after reproduction: elite are reproduced but are not mutated
 }
 
 func fitness_of_semantic(sem Semantic, sem_size, sem_offs int) float64 {
@@ -979,35 +920,11 @@ func fitness_of_semantic(sem Semantic, sem_size, sem_offs int) float64 {
 	return d / float64(sem_size)
 }
 
-// Calculates the training fitness of an individual using the information stored in its semantic vector.
-// The function updates the data structure that stores the training fitness of the individuals
-/*
-func update_training_fitness(semantic_values Semantic, crossover bool) {
-	d := fitness_of_semantic(semantic_values, nrow, 0)
-	if crossover {
-		fit_new = append(fit_new, d)
-	} else {
-		fit_new[len(fit_new)-1] = d
-	}
-}
-
-// Calculates the test fitness of an individual using the information stored in its semantic vector.
-// The function updates the data structure that stores the test fitness of the individuals
-func update_test_fitness(semantic_values Semantic, crossover bool) {
-	d := fitness_of_semantic(semantic_values, nrow_test, nrow)
-	if crossover {
-		fit_new_test = append(fit_new_test, d)
-	} else {
-		fit_new_test[len(fit_new_test)-1] = d
-	}
-}
-*/
-
 // Finds the best individual in the population
 func best_individual() int {
 	var best_index int
-	for i := 1; i < len(fit); i++ {
-		if better(fit[i], fit[best_index]) {
+	for i := 1; i < len(s_fit); i++ {
+		if better(s_fit[i], s_fit[best_index]) {
 			best_index = i
 		}
 	}
@@ -1020,15 +937,6 @@ func update_tables() {
 	s_fit_test, s_fit_test_new = s_fit_test_new, s_fit_test
 	s_sem_train_cases, s_sem_train_cases_new = s_sem_train_cases_new, s_sem_train_cases
 	s_sem_test_cases, s_sem_test_cases_new = s_sem_test_cases_new, s_sem_test_cases
-
-	fit = fit_new
-	fit_test = fit_new_test
-	sem_train_cases = sem_train_cases_new
-	sem_test_cases = sem_test_cases_new
-	fit_new = make([]float64, 0)
-	sem_train_cases_new = make([]Semantic, 0)
-	fit_new_test = make([]float64, 0)
-	sem_test_cases_new = make([]Semantic, 0)
 }
 
 func next_token(in *bufio.Scanner) string {
@@ -1168,8 +1076,8 @@ func main() {
 	// Evaluate each individual in the population, filling fitnesses and finding best individual
 	evaluate(p)
 	index_best = best_individual()
-	fmt.Fprintln(fitness_train, fit[index_best])
-	fmt.Fprintln(fitness_test, fit_test[index_best])
+	fmt.Fprintln(fitness_train, s_fit[index_best])
+	fmt.Fprintln(fitness_test, s_fit_test[index_best])
 
 	elapsedTime := time.Since(start) / time.Millisecond
 	fmt.Fprintln(executiontime, elapsedTime)
@@ -1199,25 +1107,10 @@ func main() {
 		update_tables()
 		index_best = best_individual()
 
-		fmt.Fprintln(fitness_train, fit[index_best])
-		fmt.Fprintln(fitness_test, fit_test[index_best])
+		fmt.Fprintln(fitness_train, s_fit[index_best])
+		fmt.Fprintln(fitness_test, s_fit_test[index_best])
 
 		elapsedTime += time.Since(gen_start) / time.Millisecond
 		fmt.Fprintln(executiontime, elapsedTime)
 	}
-
-	// Check if everything is allright in the end
-	if !reflect.DeepEqual(sem_train_cases, s_sem_train_cases) {
-		panic("sem_train_cases differs")
-	}
-	if !reflect.DeepEqual(sem_test_cases, s_sem_test_cases) {
-		panic("sem_test_cases differs")
-	}
-	if !reflect.DeepEqual(fit, s_fit) {
-		panic("fitness differs")
-	}
-	if !reflect.DeepEqual(fit_test, s_fit_test) {
-		panic("fit_test differs")
-	}
-	fmt.Println("Alright, computation done")
 }
