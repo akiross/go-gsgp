@@ -895,9 +895,7 @@ func geometric_semantic_crossover(i int) {
 		copy(s_sem_train_cases_new[i], s_val)
 		sem_train_cases_new = append(sem_train_cases_new, val)
 		//update_training_fitness(val, true)
-		var f float64
-		f = fitness_of_semantic(val, nrow, 0)
-		fit_new = append(fit_new, f)
+		fit_new = append(fit_new, fitness_of_semantic(val, nrow, 0))
 		s_fit_new[i] = fitness_of_semantic(s_val, nrow, 0)
 		// Compute the geometric semantic (test)
 		for j := 0; j < nrow_test; j++ {
@@ -908,8 +906,7 @@ func geometric_semantic_crossover(i int) {
 		copy(s_sem_test_cases_new[i], s_val_test)
 		sem_test_cases_new = append(sem_test_cases_new, val_test)
 		//update_test_fitness(val_test, true)
-		f = fitness_of_semantic(val_test, nrow_test, nrow)
-		fit_new_test = append(fit_new_test, f)
+		fit_new_test = append(fit_new_test, fitness_of_semantic(val_test, nrow_test, nrow))
 		s_fit_test_new[i] = fitness_of_semantic(s_val_test, nrow_test, nrow)
 	} else {
 		copy(s_sem_train_cases_new[i], s_sem_train_cases[i])
@@ -939,8 +936,6 @@ func geometric_semantic_mutation(i int) {
 
 		mut_step := rand.Float64()
 
-		var f float64
-
 		for j := 0; j < nrow; j++ {
 			sigmoid1 := 1 / (1 + math.Exp(-sem_rt1[j]))
 			sigmoid2 := 1 / (1 + math.Exp(-sem_rt2[j]))
@@ -948,9 +943,8 @@ func geometric_semantic_mutation(i int) {
 			sem_train_cases_new[i][j] = sem_train_cases_new[i][j] + mut_step*(sigmoid1-sigmoid2)
 		}
 		//update_training_fitness(sem_train_cases_new[i], false)
-		f = fitness_of_semantic(sem_train_cases_new[i], nrow, 0)
-		s_fit_new[i] = f
-		fit_new[len(fit_new)-1] = f
+		s_fit_new[i] = fitness_of_semantic(s_sem_train_cases_new[i], nrow, 0)
+		fit_new[len(fit_new)-1] = fitness_of_semantic(sem_train_cases_new[i], nrow, 0)
 		for j := 0; j < nrow_test; j++ {
 			sigmoid1 := 1 / (1 + math.Exp(-sem_rt1_test[j]))
 			sigmoid2 := 1 / (1 + math.Exp(-sem_rt2_test[j]))
@@ -958,9 +952,8 @@ func geometric_semantic_mutation(i int) {
 			sem_test_cases_new[i][j] = sem_test_cases_new[i][j] + mut_step*(sigmoid1-sigmoid2)
 		}
 		//update_test_fitness(sem_test_cases_new[i], false)
-		f = fitness_of_semantic(sem_test_cases_new[i], nrow_test, nrow)
-		s_fit_test_new[i] = f
-		fit_new_test[len(fit_new_test)-1] = f
+		s_fit_test_new[i] = fitness_of_semantic(s_sem_test_cases_new[i], nrow_test, nrow)
+		fit_new_test[len(fit_new_test)-1] = fitness_of_semantic(sem_test_cases_new[i], nrow_test, nrow)
 	} else {
 		/*
 			// Why mutation adds a new individual instead of replacing? ASK MAURO TODO FIXME XXX XXX XXX XXX XXX XXX XXX XXX XXX XXX XXX
@@ -1019,16 +1012,6 @@ func best_individual() int {
 		}
 	}
 	return best_index
-}
-
-func swap_copy(a, b []float64) {
-	if len(a) != len(b) {
-		panic("Different lengths")
-	}
-	c := make([]float64, len(a))
-	copy(c, a)
-	copy(a, b)
-	copy(b, c)
 }
 
 // Updates the tables used to store fitness values and semantics of the individual. It is used at the end of each iteration of the algorithm
