@@ -86,10 +86,8 @@ type Node struct {
 
 // Population is used to represent a GP population.
 type Population struct {
-	individuals []*Node   // Individuals' root node
-	num_ind     int       // Number of individuals in the population
-	index_best  int       // Index of the best individual after evaluate is run
-	fitness     []float64 // Fitness values for each individual
+	individuals []*Node // Individuals' root node
+	num_ind     int     // Number of individuals in the population
 }
 
 // The Semantic of one individual is a vector as long as the dataset where each
@@ -134,17 +132,17 @@ var (
 	nrow      int        // Number of rows (instances) in training dataset
 	nvar      int        // Number of variables (columns excluding target) in training dataset
 	nrow_test int        // Number of rows (instances) in test dataset
-	nvar_test int        // Number of input variables (columns excluding target) in test dataset
+	nvar_test int        // Number of input variables (columns excluding target) in test dataset FIXME unused
 
-	fit          = make([]float64, 0) // Training fitness values at generation g
-	fit_test     = make([]float64, 0) // Test fitness values at generation g
-	fit_new      = make([]float64, 0) // Training fitness values at current generation g+1
-	fit_new_test = make([]float64, 0) // Test fitness values at current generation g+1
+	fit          []float64 // Training fitness values at generation g
+	fit_test     []float64 // Test fitness values at generation g
+	fit_new      []float64 // Training fitness values at current generation g+1
+	fit_test_new []float64 // Test fitness values at current generation g+1
 
-	sem_train_cases     = make([]Semantic, 0) // Semantics of the population, computed on training set, at generation g
-	sem_train_cases_new = make([]Semantic, 0) // Semantics of the population, computed on training set, at current generation g+1
-	sem_test_cases      = make([]Semantic, 0) // Semantics of the population, computed on test set, at generation g
-	sem_test_cases_new  = make([]Semantic, 0) // Semantics of the population, computed on test set, at current generation g+1
+	sem_train_cases     []Semantic // Semantics of the population, computed on training set, at generation g
+	sem_train_cases_new []Semantic // Semantics of the population, computed on training set, at current generation g+1
+	sem_test_cases      []Semantic // Semantics of the population, computed on test set, at generation g
+	sem_test_cases_new  []Semantic // Semantics of the population, computed on test set, at current generation g+1
 
 	index_best int // Index of the best individual (where? sem_*?)
 )
@@ -244,9 +242,9 @@ func read_input_data(train_file, test_file string) {
 	in_test := bufio.NewScanner(in_test_f)
 	in_test.Split(bufio.ScanWords)
 	// Read first two tokens of each file
-	nvar = atoi(next_token(in)) // Number of variables
-	nvar_test = atoi(next_token(in_test))
-	nrow = atoi(next_token(in)) // Number of rows
+	nvar = atoi(next_token(in))           // Number of variables
+	nvar_test = atoi(next_token(in_test)) // FIXME is this necessary? it is not used
+	nrow = atoi(next_token(in))           // Number of rows
 	nrow_test = atoi(next_token(in_test))
 	set = make([]Instance, nrow+nrow_test)
 	for i := 0; i < nrow; i++ {
@@ -384,7 +382,6 @@ func NewPopulation(seeds ...string) *Population {
 	p := &Population{
 		individuals: make([]*Node, *config.population_size),
 		num_ind:     len(seeds),
-		fitness:     make([]float64, *config.population_size),
 	}
 	for i := range seeds {
 		p.individuals[i] = read_sem(seeds[i])
@@ -575,8 +572,8 @@ func eval(tree *Node, i int) float64 {
 			} else {
 				return math.Sqrt(v)
 			}
-		case "^":
-			return math.Pow(eval(tree.children[0], i), eval(tree.children[1], i))
+		//case "^":
+		//	return math.Pow(eval(tree.children[0], i), eval(tree.children[1], i))
 		default:
 			panic("Undefined symbol: '" + tree.root.name + "'")
 		}
@@ -585,70 +582,75 @@ func eval(tree *Node, i int) float64 {
 	}
 }
 
+func eval_to_expr(tree *Node) string {
+	switch {
+	case tree.root == nil:
+		panic("Cannot convert nil Node to kernel")
+	case tree.root.isFunc:
+		switch tree.root.name {
+		case "+":
+			return fmt.Sprintf("(%s + %s)", eval_to_expr(tree.children[0]), eval_to_expr(tree.children[1]))
+		case "-":
+			return fmt.Sprintf("(%s - %s)", eval_to_expr(tree.children[0]), eval_to_expr(tree.children[1]))
+		case "*":
+			return fmt.Sprintf("(%s * %s)", eval_to_expr(tree.children[0]), eval_to_expr(tree.children[1]))
+		case "/":
+			c0, c1 := eval_to_expr(tree.children[0]), eval_to_expr(tree.children[1])
+			return fmt.Sprintf("((%s != 0) ? (%s / %s) : 1)", c1, c0, c1)
+		case "sqrt":
+			v := eval_to_expr(tree.children[0])
+			return fmt.Sprintf("((%s < 0) ? sqrt(-(%s)) : sqrt(%s)", v, v, v)
+		//case "^":
+		//	return math.Pow(eval(tree.children[0], i), eval(tree.children[1], i))
+		default:
+			panic("Undefined symbol: '" + tree.root.name + "' when converting Node to kernel")
+		}
+	default:
+		return "access_terminal(i)" // this will access the terminal values stored on GPU
+		//return terminal_value(0, tree.root) // Root points to a terminal
+	}
+}
+
+func eval_to_kernel(tree *Node, name string) string {
+	return fmt.Sprintf(`extern "C" __global__
+void kernel_%s() {
+	return %s;
+}
+`, name, eval_to_expr(tree))
+}
+
 // Calculates the fitness of all the individuals and determines the best individual in the population
 // Evaluate is called once, after individuals have been initialized for the first time.
-// This function fills p.fitness and p.index_best using semantic_evaluate
+// This function fills fit using semantic_evaluate
 func evaluate(p *Population) {
-	p.fitness[0] = semantic_evaluate(p.individuals[0])
-	p.index_best = 0
-	fit = append(fit, p.fitness[0])
-	fit_test = append(fit_test, semantic_evaluate_test(p.individuals[0]))
+	f, s := semantic_evaluate(p.individuals[0], nrow, 0)
+	fit[0] = f
+	copy(sem_train_cases[0], s)
+
+	f, s = semantic_evaluate(p.individuals[0], nrow_test, nrow)
+	fit_test[0] = f
+	copy(sem_test_cases[0], s)
+
 	for i := 1; i < *config.population_size; i++ {
-		p.fitness[i] = semantic_evaluate(p.individuals[i])
-		fit = append(fit, p.fitness[i])
-		fit_test = append(fit_test, semantic_evaluate_test(p.individuals[i]))
-		if better(p.fitness[i], p.fitness[p.index_best]) {
-			p.index_best = i
-		}
+		f, s = semantic_evaluate(p.individuals[i], nrow, 0)
+		fit[i] = f
+		copy(sem_train_cases[i], s)
+
+		f, s = semantic_evaluate(p.individuals[i], nrow_test, nrow)
+		fit_test[i] = f
+		copy(sem_test_cases[i], s)
 	}
 }
 
 // Calculates the training fitness of an individual (representing as a tree).
 // This function will append to sem_train_cases the semantic of the evaluated node.
-func semantic_evaluate(el *Node) float64 {
+func semantic_evaluate(el *Node, sem_size, sem_offs int) (float64, Semantic) {
 	var d float64
-	val := make(Semantic, nrow)
+	val := make(Semantic, sem_size)
 	if !use_goroutines_for_fitness {
-		for i := 0; i < nrow; i++ {
-			res := eval(el, i) // Evaluate the element on the i-th instance
-			val[i] = res
-			d += square_diff(res, set[i].y_value)
-		}
-	} else {
-		// Communication channel
-		ch := make(chan float64)
-		// Create some workers to work on chunks of rows
-		nw := runtime.NumCPU()
-		for w := 0; w < nw; w++ {
-			go func(id int) {
-				var wd float64
-				// Each worker uses a partition of the dataset
-				for i := id; i < nrow; i += nw {
-					res := eval(el, i)
-					val[i] = res
-					wd += square_diff(res, set[i].y_value)
-				}
-				ch <- wd // Send partial results
-			}(w)
-		}
-		for w := 0; w < nw; w++ {
-			d += <-ch
-		}
-	}
-	sem_train_cases = append(sem_train_cases, val)
-	d = d / float64(nrow)
-	return d
-}
-
-// Calculates the test fitness of an individual (representing as a tree).
-// This function will append to sem_test_cases the semantic of the evaluated node.
-func semantic_evaluate_test(el *Node) float64 {
-	var d float64
-	val := make(Semantic, nrow_test)
-	if !use_goroutines_for_fitness {
-		for i := nrow; i < nrow+nrow_test; i++ {
+		for i := sem_offs; i < sem_offs+sem_size; i++ {
 			res := eval(el, i)
-			val[i-nrow] = res
+			val[i-sem_offs] = res
 			d += square_diff(res, set[i].y_value)
 		}
 	} else {
@@ -660,9 +662,9 @@ func semantic_evaluate_test(el *Node) float64 {
 			go func(id int) {
 				var wd float64
 				// Each worker works on a separated share
-				for i := nrow + id; i < nrow+nrow_test; i += nw {
+				for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
 					res := eval(el, i)
-					val[i-nrow] = res
+					val[i-sem_offs] = res
 					wd += square_diff(res, set[i].y_value)
 				}
 				ch <- wd // Send partial results
@@ -672,17 +674,16 @@ func semantic_evaluate_test(el *Node) float64 {
 			d += <-ch
 		}
 	}
-	sem_test_cases = append(sem_test_cases, val)
 	d = d / float64(nrow_test)
-	return d
+	return d, val
 }
 
 // Calculates the semantics (considering training instances) of a randomly generated tree. The tree is used to perform the semantic geometric crossover or the geometric semantic mutation
-func semantic_evaluate_random(el *Node) Semantic {
-	sem := make(Semantic, nrow)
+func semantic_evaluate_random(el *Node, sem_size, sem_offs int) Semantic {
+	sem := make(Semantic, sem_size)
 	if !use_goroutines_for_fitness {
-		for i := 0; i < nrow; i++ {
-			sem[i] = eval(el, i)
+		for i := sem_offs; i < sem_offs+sem_size; i++ {
+			sem[i-sem_offs] = eval(el, i)
 		}
 	} else {
 		sc := make(chan bool) // Sync channel
@@ -691,35 +692,8 @@ func semantic_evaluate_random(el *Node) Semantic {
 		for w := 0; w < nw; w++ {
 			go func(id int) {
 				// Each worker uses a partition of the dataset
-				for i := id; i < nrow; i += nw {
-					sem[i] = eval(el, i)
-				}
-				sc <- true
-			}(w)
-		}
-		for w := 0; w < nw; w++ {
-			<-sc
-		}
-	}
-	return sem
-}
-
-// Calculates the semantics (considering test instances) of a randomly generated tree. The tree is used to perform the semantic geometric crossover or the geometric semantic mutation
-func semantic_evaluate_random_test(el *Node) Semantic {
-	sem := make(Semantic, nrow_test)
-	if !use_goroutines_for_fitness {
-		for i := nrow; i < nrow+nrow_test; i++ {
-			sem[i-nrow] = eval(el, i)
-		}
-	} else {
-		sc := make(chan bool) // Sync channel
-		// Create some workers to work on chunks of rows
-		nw := runtime.NumCPU()
-		for w := 0; w < nw; w++ {
-			go func(id int) {
-				// Each worker uses a partition of the dataset
-				for i := id + nrow; i < nrow+nrow_test; i += nw {
-					sem[i-nrow] = eval(el, i)
+				for i := id + sem_offs; i < sem_offs+sem_size; i += nw {
+					sem[i-sem_offs] = eval(el, i)
 				}
 				sc <- true
 			}(w)
@@ -745,18 +719,21 @@ func tournament_selection() int {
 	return best_index
 }
 
-// Copies an individual of the population at generation g-1 to the current population(generation g)
+// Copies an individual of the population at generation g-1 to the current population (generation g)
+// Any individual (any position) can be selected to be copied in position i
 func reproduction(i int) {
+	old_i := i
 	// Elitism: if i is the best individual, reproduce it
 	if i != index_best {
 		// If it's not the best, select one at random to reproduce
 		i = tournament_selection()
 	}
+
 	// Copy fitness and semantics of the selected individual
-	sem_train_cases_new = append(sem_train_cases_new, sem_train_cases[i])
-	fit_new = append(fit_new, fit[i])
-	sem_test_cases_new = append(sem_test_cases_new, sem_test_cases[i])
-	fit_new_test = append(fit_new_test, fit_test[i])
+	copy(sem_train_cases_new[old_i], sem_train_cases[i])
+	fit_new[old_i] = fit[i]
+	copy(sem_test_cases_new[old_i], sem_test_cases[i])
+	fit_test_new[old_i] = fit_test[i]
 }
 
 // Performs a geometric semantic crossover
@@ -767,30 +744,30 @@ func geometric_semantic_crossover(i int) {
 		p2 := tournament_selection()
 		// Generate a random tree and compute its semantic (train and test)
 		rt := create_grow_tree(0, nil, *config.max_depth_creation)
-		sem_rt := semantic_evaluate_random(rt)
-		sem_rt_test := semantic_evaluate_random_test(rt)
+		sem_rt := semantic_evaluate_random(rt, nrow, 0)
+		sem_rt_test := semantic_evaluate_random(rt, nrow_test, nrow)
 		// Compute the geometric semantic (train)
-		val := make(Semantic, nrow)
-		val_test := make(Semantic, nrow_test)
+		s_val := make(Semantic, nrow)
 		for j := 0; j < nrow; j++ {
 			sigmoid := 1 / (1 + math.Exp(-sem_rt[j]))
-			val[j] = sem_train_cases[p1][j]*sigmoid + sem_train_cases[p2][j]*(1-sigmoid)
+			s_val[j] = sem_train_cases[p1][j]*sigmoid + sem_train_cases[p2][j]*(1-sigmoid)
 		}
-		sem_train_cases_new = append(sem_train_cases_new, val)
-		update_training_fitness(val, true)
+		copy(sem_train_cases_new[i], s_val)
+		fit_new[i] = fitness_of_semantic(s_val, nrow, 0)
 		// Compute the geometric semantic (test)
+		s_val_test := make(Semantic, nrow_test)
 		for j := 0; j < nrow_test; j++ {
 			sigmoid := 1 / (1 + math.Exp(-sem_rt_test[j]))
-			val_test[j] = sem_test_cases[p1][j]*sigmoid + sem_test_cases[p2][j]*(1-sigmoid)
+			s_val_test[j] = sem_test_cases[p1][j]*sigmoid + sem_test_cases[p2][j]*(1-sigmoid)
 		}
-		sem_test_cases_new = append(sem_test_cases_new, val_test)
-		update_test_fitness(val_test, true)
+		copy(sem_test_cases_new[i], s_val_test)
+		fit_test_new[i] = fitness_of_semantic(s_val_test, nrow_test, nrow)
 	} else {
 		// The best individual will not be changed
-		sem_train_cases_new = append(sem_train_cases_new, sem_train_cases[i])
-		fit_new = append(fit_new, fit[i])
-		sem_test_cases_new = append(sem_test_cases_new, sem_test_cases[i])
-		fit_new_test = append(fit_new_test, fit_test[i])
+		copy(sem_train_cases_new[i], sem_train_cases[i])
+		copy(sem_test_cases_new[i], sem_test_cases[i])
+		fit_new[i] = fit[i]
+		fit_test_new[i] = fit_test[i]
 	}
 }
 
@@ -801,61 +778,35 @@ func geometric_semantic_mutation(i int) {
 		rt1 := create_grow_tree(0, nil, *config.max_depth_creation)
 		rt2 := create_grow_tree(0, nil, *config.max_depth_creation)
 
-		sem_rt1 := semantic_evaluate_random(rt1)
-		sem_rt1_test := semantic_evaluate_random_test(rt1)
-		sem_rt2 := semantic_evaluate_random(rt2)
-		sem_rt2_test := semantic_evaluate_random_test(rt2)
+		sem_rt1 := semantic_evaluate_random(rt1, nrow, 0)
+		sem_rt1_test := semantic_evaluate_random(rt1, nrow_test, nrow)
+		sem_rt2 := semantic_evaluate_random(rt2, nrow, 0)
+		sem_rt2_test := semantic_evaluate_random(rt2, nrow_test, nrow)
 
 		mut_step := rand.Float64()
 
 		for j := 0; j < nrow; j++ {
 			sigmoid1 := 1 / (1 + math.Exp(-sem_rt1[j]))
 			sigmoid2 := 1 / (1 + math.Exp(-sem_rt2[j]))
-			sem_train_cases_new[i][j] = sem_train_cases_new[i][j] + mut_step*(sigmoid1-sigmoid2)
+			sem_train_cases_new[i][j] += mut_step * (sigmoid1 - sigmoid2)
 		}
-		update_training_fitness(sem_train_cases_new[i], false)
-
+		fit_new[i] = fitness_of_semantic(sem_train_cases_new[i], nrow, 0)
 		for j := 0; j < nrow_test; j++ {
 			sigmoid1 := 1 / (1 + math.Exp(-sem_rt1_test[j]))
 			sigmoid2 := 1 / (1 + math.Exp(-sem_rt2_test[j]))
-			sem_test_cases_new[i][j] = sem_test_cases_new[i][j] + mut_step*(sigmoid1-sigmoid2)
+			sem_test_cases_new[i][j] += mut_step * (sigmoid1 - sigmoid2)
 		}
-		update_test_fitness(sem_test_cases_new[i], false)
-	} else {
-		// The best individual will not be changed
-		sem_train_cases_new = append(sem_train_cases_new, sem_train_cases[i])
-		fit_new = append(fit_new, fit[i])
-		sem_test_cases_new = append(sem_test_cases_new, sem_test_cases[i])
-		fit_new_test = append(fit_new_test, fit_test[i])
+		fit_test_new[i] = fitness_of_semantic(sem_test_cases_new[i], nrow_test, nrow)
 	}
+	// Mutation happens after reproduction: elite are reproduced but are not mutated
 }
 
-// Calculates the training fitness of an individual using the information stored in its semantic vector.
-// The function updates the data structure that stores the training fitness of the individuals
-func update_training_fitness(semantic_values Semantic, crossover bool) {
+func fitness_of_semantic(sem Semantic, sem_size, sem_offs int) float64 {
 	var d float64
-	for j := 0; j < nrow; j++ {
-		d += square_diff(semantic_values[j], set[j].y_value)
+	for j := sem_offs; j < sem_offs+sem_size; j++ {
+		d += square_diff(sem[j-sem_offs], set[j].y_value)
 	}
-	if crossover {
-		fit_new = append(fit_new, d/float64(nrow))
-	} else {
-		fit_new[len(fit_new)-1] = d / float64(nrow)
-	}
-}
-
-// Calculates the test fitness of an individual using the information stored in its semantic vector.
-// The function updates the data structure that stores the test fitness of the individuals
-func update_test_fitness(semantic_values Semantic, crossover bool) {
-	var d float64
-	for j := nrow; j < nrow+nrow_test; j++ {
-		d += square_diff(semantic_values[j-nrow], set[j].y_value)
-	}
-	if crossover {
-		fit_new_test = append(fit_new_test, d/float64(nrow_test))
-	} else {
-		fit_new_test[len(fit_new_test)-1] = d / float64(nrow_test)
-	}
+	return d / float64(sem_size)
 }
 
 // Finds the best individual in the population
@@ -871,14 +822,10 @@ func best_individual() int {
 
 // Updates the tables used to store fitness values and semantics of the individual. It is used at the end of each iteration of the algorithm
 func update_tables() {
-	fit = fit_new
-	fit_new = make([]float64, 0)
-	sem_train_cases = sem_train_cases_new
-	sem_train_cases_new = make([]Semantic, 0)
-	fit_test = fit_new_test
-	fit_new_test = make([]float64, 0)
-	sem_test_cases = sem_test_cases_new
-	sem_test_cases_new = make([]Semantic, 0)
+	fit, fit_new = fit_new, fit
+	fit_test, fit_test_new = fit_test_new, fit_test
+	sem_train_cases, sem_train_cases_new = sem_train_cases_new, sem_train_cases
+	sem_test_cases, sem_test_cases_new = sem_test_cases_new, sem_test_cases
 }
 
 func next_token(in *bufio.Scanner) string {
@@ -912,6 +859,23 @@ func create_or_panic(path string) *os.File {
 		panic(err)
 	}
 	return f
+}
+
+func init_tables() {
+	fit = make([]float64, *config.population_size)
+	fit_test = make([]float64, *config.population_size)
+	fit_new = make([]float64, *config.population_size)
+	fit_test_new = make([]float64, *config.population_size)
+	sem_train_cases = make([]Semantic, *config.population_size)
+	sem_train_cases_new = make([]Semantic, *config.population_size)
+	sem_test_cases = make([]Semantic, *config.population_size)
+	sem_test_cases_new = make([]Semantic, *config.population_size)
+	for i := 0; i < *config.population_size; i++ {
+		sem_train_cases[i] = make(Semantic, nrow)
+		sem_train_cases_new[i] = make(Semantic, nrow)
+		sem_test_cases[i] = make(Semantic, nrow_test)
+		sem_test_cases_new[i] = make(Semantic, nrow_test)
+	}
 }
 
 func main() {
@@ -992,19 +956,23 @@ void somma(int *a, int *b, int *c, int *len) {
 
 	fmt.Println("CUDA initialized successfully")
 
+	// Create some files for output data
 	executiontime := create_or_panic("execution_time.txt")
 	defer executiontime.Close()
-
-	var start time.Time
-	start = time.Now()
-
 	fitness_train := create_or_panic("fitnesstrain.txt")
 	defer fitness_train.Close()
 	fitness_test := create_or_panic("fitnesstest.txt")
 	defer fitness_test.Close()
+
+	// Tracking time
+	var start time.Time
+	start = time.Now()
+
 	// Seed RNG
 	rand.Seed(*config.rng_seed)
+	// Read training and testing datasets (populate nvar, nrow and set)
 	read_input_data(*config.path_in, *config.path_test)
+	// Create tables with terminals and functionals
 	create_T_F()
 
 	fmt.Println("CUDA ctx sync...")
@@ -1047,14 +1015,21 @@ void somma(int *a, int *b, int *c, int *len) {
 
 	// Create population and feed
 	p := NewPopulation(sem_seed...)
+	// Prepare tables (memory allocation)
+	init_tables()
 	initialize_population(p, *config.init_type)
+	// Evaluate each individual in the population, filling fitnesses and finding best individual
 	evaluate(p)
-	fmt.Fprintln(fitness_train, semantic_evaluate(p.individuals[p.index_best]))
-	fmt.Fprintln(fitness_test, semantic_evaluate_test(p.individuals[p.index_best]))
 	index_best = best_individual()
+	fmt.Fprintln(fitness_train, fit[index_best])
+	fmt.Fprintln(fitness_test, fit_test[index_best])
 
 	elapsedTime := time.Since(start) / time.Millisecond
 	fmt.Fprintln(executiontime, elapsedTime)
+
+	// Test some kernels
+	//fmt.Println(eval_to_kernel(create_grow_tree(0, nil, *config.max_depth_creation), "foobar"))
+	//panic("Fatto")
 
 	// main GP cycle
 	for num_gen := 0; num_gen < *config.max_number_generations; num_gen++ {
