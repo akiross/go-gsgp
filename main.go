@@ -244,7 +244,10 @@ func read_input_data(train_file, test_file string) {
 	// Read first two tokens of each file
 	nvar = atoi(next_token(in))           // Number of variables
 	nvar_test = atoi(next_token(in_test)) // FIXME is this necessary? it is not used
-	nrow = atoi(next_token(in))           // Number of rows
+	if nvar != nvar_test {
+		panic("Train and Test datasets must have the same number of variables")
+	}
+	nrow = atoi(next_token(in)) // Number of rows
 	nrow_test = atoi(next_token(in_test))
 	set = make([]Instance, nrow+nrow_test)
 	for i := 0; i < nrow; i++ {
@@ -801,6 +804,9 @@ func geometric_semantic_mutation(i int) {
 	// Mutation happens after reproduction: elite are reproduced but are not mutated
 }
 
+// Given a semantic, compute the fitness of a subset of that semantic as the
+// Mean Squared Difference between the semantic and the dataset.
+// Only sem_size elements, starting from sem_offs, will be considered in the computation
 func fitness_of_semantic(sem Semantic, sem_size, sem_offs int) float64 {
 	var d float64
 	for j := sem_offs; j < sem_offs+sem_size; j++ {
@@ -828,6 +834,7 @@ func update_tables() {
 	sem_test_cases, sem_test_cases_new = sem_test_cases_new, sem_test_cases
 }
 
+// Return the next text token in the provided scanner
 func next_token(in *bufio.Scanner) string {
 	in.Scan()
 	return in.Text()
@@ -853,6 +860,7 @@ func node_count(el *Node) int {
 	return counter
 }
 
+// Create file or panic if an error occurs
 func create_or_panic(path string) *os.File {
 	f, err := os.Create(path)
 	if err != nil {
@@ -861,6 +869,7 @@ func create_or_panic(path string) *os.File {
 	return f
 }
 
+// Allocate memory for fitness and semantic value for each individual
 func init_tables() {
 	fit = make([]float64, *config.population_size)
 	fit_test = make([]float64, *config.population_size)
