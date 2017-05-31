@@ -693,43 +693,6 @@ func eval(tree *Node, i int) float64 {
 	}
 }
 
-func eval_to_expr(tree *Node) string {
-	switch {
-	case tree.root == nil:
-		panic("Cannot convert nil Node to kernel")
-	case tree.root.isFunc:
-		switch tree.root.name {
-		case "+":
-			return fmt.Sprintf("(%s + %s)", eval_to_expr(tree.children[0]), eval_to_expr(tree.children[1]))
-		case "-":
-			return fmt.Sprintf("(%s - %s)", eval_to_expr(tree.children[0]), eval_to_expr(tree.children[1]))
-		case "*":
-			return fmt.Sprintf("(%s * %s)", eval_to_expr(tree.children[0]), eval_to_expr(tree.children[1]))
-		case "/":
-			c0, c1 := eval_to_expr(tree.children[0]), eval_to_expr(tree.children[1])
-			return fmt.Sprintf("((%s != 0) ? (%s / %s) : 1)", c1, c0, c1)
-		case "sqrt":
-			v := eval_to_expr(tree.children[0])
-			return fmt.Sprintf("((%s < 0) ? sqrt(-(%s)) : sqrt(%s)", v, v, v)
-		//case "^":
-		//	return math.Pow(eval(tree.children[0], i), eval(tree.children[1], i))
-		default:
-			panic("Undefined symbol: '" + tree.root.name + "' when converting Node to kernel")
-		}
-	default:
-		return "access_terminal(i)" // this will access the terminal values stored on GPU
-		//return terminal_value(0, tree.root) // Root points to a terminal
-	}
-}
-
-func eval_to_kernel(tree *Node, name string) string {
-	return fmt.Sprintf(`extern "C" __global__
-void kernel_%s() {
-	return %s;
-}
-`, name, eval_to_expr(tree))
-}
-
 // Calculates the fitness of all the individuals and determines the best individual in the population
 // Evaluate is called once, after individuals have been initialized for the first time.
 // This function fills fit using semantic_evaluate
@@ -1081,10 +1044,6 @@ func main() {
 
 	elapsedTime := time.Since(start) / time.Millisecond
 	fmt.Fprintln(executiontime, elapsedTime)
-
-	// Test some kernels
-	//fmt.Println(eval_to_kernel(create_grow_tree(0, nil, *config.max_depth_creation), "foobar"))
-	//panic("Fatto")
 
 	// main GP cycle
 	for num_gen := 0; num_gen < *config.max_number_generations; num_gen++ {
