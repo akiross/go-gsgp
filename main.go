@@ -41,8 +41,6 @@ import (
 	"unsafe"
 )
 
-const use_goroutines_for_fitness = true
-
 // Instance represent a single training/test instance in memory
 type Instance struct {
 	vars    []float64 // Values of the input (independent) variables
@@ -66,6 +64,8 @@ type Config struct {
 	minimization_problem   *bool    // True if we are minimizing, false if maximizing
 	path_in, path_test     *string
 	rng_seed               *int64
+	use_goroutines         *bool
+	use_cuda               *bool
 }
 
 // Symbol represents a symbol of the set T (terminal symbols) or F (functional symbols).
@@ -114,6 +114,8 @@ var (
 		path_in:                flag.String("train_file", "", "Path for the train file"),
 		path_test:              flag.String("test_file", "", "Path for the test file"),
 		rng_seed:               flag.Int64("seed", time.Now().UnixNano(), "Specify a seed for the RNG (uses time by default)"),
+		use_goroutines:         flag.Bool("use_goroutines", false, "Enable goroutines in evaluation of fitness"),
+		use_cuda:               flag.Bool("use_cuda", false, "Enable CUDA in generation of random trees"),
 	}
 	cpuprofile = flag.String("cpuprofile", "", "Write CPU profile to file")
 
@@ -145,6 +147,8 @@ var (
 	sem_test_cases_new  []Semantic // Semantics of the population, computed on test set, at current generation g+1
 
 	index_best int // Index of the best individual (where? sem_*?)
+
+	semchan chan Semantic // Channel to move semantics fromm device to host
 )
 
 func init() {
@@ -425,28 +429,25 @@ func create_grow_tree(depth int, parent *Node, max_depth int) *Node {
 			children: nil,
 		}
 	}
-	if depth > 0 && depth < max_depth || depth == 0 && *config.zero_depth {
-		if rand.Intn(2) == 0 {
-			sym := symbols[choose_function()]
-			el := &Node{
-				root:     sym,
-				parent:   parent,
-				children: make([]*Node, sym.arity),
-			}
-			for i := 0; i < sym.arity; i++ {
-				el.children[i] = create_grow_tree(depth+1, el, max_depth)
-			}
-			return el
-		} else {
-			term := choose_terminal()
-			return &Node{
-				root:     symbols[term],
-				parent:   parent,
-				children: nil,
-			}
+	if rand.Intn(2) == 0 {
+		sym := symbols[choose_function()]
+		el := &Node{
+			root:     sym,
+			parent:   parent,
+			children: make([]*Node, sym.arity),
+		}
+		for i := 0; i < sym.arity; i++ {
+			el.children[i] = create_grow_tree(depth+1, el, max_depth)
+		}
+		return el
+	} else {
+		term := choose_terminal()
+		return &Node{
+			root:     symbols[term],
+			parent:   parent,
+			children: nil,
 		}
 	}
-	panic("Unreachable code was reached in grow!")
 }
 
 // Creates a tree with depth equal to the ones specified by the parameter max_depth
@@ -602,24 +603,33 @@ func eval_to_expr(tree *Node) string {
 			return fmt.Sprintf("((%s != 0) ? (%s / %s) : 1)", c1, c0, c1)
 		case "sqrt":
 			v := eval_to_expr(tree.children[0])
-			return fmt.Sprintf("((%s < 0) ? sqrt(-(%s)) : sqrt(%s)", v, v, v)
+			return fmt.Sprintf("((%s < 0) ? sqrt(-%s) : sqrt(%s))", v, v, v)
 		//case "^":
 		//	return math.Pow(eval(tree.children[0], i), eval(tree.children[1], i))
 		default:
 			panic("Undefined symbol: '" + tree.root.name + "' when converting Node to kernel")
 		}
 	default:
-		return "access_terminal(i)" // this will access the terminal values stored on GPU
-		//return terminal_value(0, tree.root) // Root points to a terminal
+		sym := tree.root
+		if sym.id >= NUM_FUNCTIONAL_SYMBOLS && sym.id < NUM_FUNCTIONAL_SYMBOLS+NUM_VARIABLE_SYMBOLS {
+			return fmt.Sprintf("set[i * wide + %d]", sym.id-NUM_FUNCTIONAL_SYMBOLS)
+			//return set[i].vars[sym.id-NUM_FUNCTIONAL_SYMBOLS]
+		} else {
+			return fmt.Sprintf("(%v)", sym.value)
+		}
 	}
 }
 
 func eval_to_kernel(tree *Node, name string) string {
 	return fmt.Sprintf(`extern "C" __global__
-void kernel_%s() {
-	return %s;
+void %s(double *out, double *set) {
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	int len = %d;
+	int wide = %d;
+	if (i < len)
+		out[i] = %s;
 }
-`, name, eval_to_expr(tree))
+`, name, nrow+nrow_test, nvar+1, eval_to_expr(tree))
 }
 
 // Calculates the fitness of all the individuals and determines the best individual in the population
@@ -650,7 +660,7 @@ func evaluate(p *Population) {
 func semantic_evaluate(el *Node, sem_size, sem_offs int) (float64, Semantic) {
 	var d float64
 	val := make(Semantic, sem_size)
-	if !use_goroutines_for_fitness {
+	if !*config.use_goroutines {
 		for i := sem_offs; i < sem_offs+sem_size; i++ {
 			res := eval(el, i)
 			val[i-sem_offs] = res
@@ -684,7 +694,7 @@ func semantic_evaluate(el *Node, sem_size, sem_offs int) (float64, Semantic) {
 // Calculates the semantics (considering training instances) of a randomly generated tree. The tree is used to perform the semantic geometric crossover or the geometric semantic mutation
 func semantic_evaluate_random(el *Node, sem_size, sem_offs int) Semantic {
 	sem := make(Semantic, sem_size)
-	if !use_goroutines_for_fitness {
+	if !*config.use_goroutines {
 		for i := sem_offs; i < sem_offs+sem_size; i++ {
 			sem[i-sem_offs] = eval(el, i)
 		}
@@ -706,6 +716,21 @@ func semantic_evaluate_random(el *Node, sem_size, sem_offs int) Semantic {
 		}
 	}
 	return sem
+}
+
+func random_tree_semantics() (Semantic, Semantic) {
+	if !*config.use_cuda {
+		// Generate a random tree and compute its semantic (train and test)
+		rt := create_grow_tree(0, nil, *config.max_depth_creation)
+		sem_train := semantic_evaluate_random(rt, nrow, 0)
+		sem_test := semantic_evaluate_random(rt, nrow_test, nrow)
+		return sem_train, sem_test
+	} else {
+		// Get semantic from GPU
+		sem := <-semchan
+		// Split into train and test semantics
+		return sem[:nrow], sem[nrow:]
+	}
 }
 
 // Implements a tournament selection procedure
@@ -746,25 +771,19 @@ func geometric_semantic_crossover(i int) {
 		p1 := tournament_selection()
 		p2 := tournament_selection()
 		// Generate a random tree and compute its semantic (train and test)
-		rt := create_grow_tree(0, nil, *config.max_depth_creation)
-		sem_rt := semantic_evaluate_random(rt, nrow, 0)
-		sem_rt_test := semantic_evaluate_random(rt, nrow_test, nrow)
+		sem_rt, sem_rt_test := random_tree_semantics()
 		// Compute the geometric semantic (train)
-		s_val := make(Semantic, nrow)
 		for j := 0; j < nrow; j++ {
 			sigmoid := 1 / (1 + math.Exp(-sem_rt[j]))
-			s_val[j] = sem_train_cases[p1][j]*sigmoid + sem_train_cases[p2][j]*(1-sigmoid)
+			sem_train_cases_new[i][j] = sem_train_cases[p1][j]*sigmoid + sem_train_cases[p2][j]*(1-sigmoid)
 		}
-		copy(sem_train_cases_new[i], s_val)
-		fit_new[i] = fitness_of_semantic(s_val, nrow, 0)
+		fit_new[i] = fitness_of_semantic(sem_train_cases_new[i], nrow, 0)
 		// Compute the geometric semantic (test)
-		s_val_test := make(Semantic, nrow_test)
 		for j := 0; j < nrow_test; j++ {
 			sigmoid := 1 / (1 + math.Exp(-sem_rt_test[j]))
-			s_val_test[j] = sem_test_cases[p1][j]*sigmoid + sem_test_cases[p2][j]*(1-sigmoid)
+			sem_test_cases_new[i][j] = sem_test_cases[p1][j]*sigmoid + sem_test_cases[p2][j]*(1-sigmoid)
 		}
-		copy(sem_test_cases_new[i], s_val_test)
-		fit_test_new[i] = fitness_of_semantic(s_val_test, nrow_test, nrow)
+		fit_test_new[i] = fitness_of_semantic(sem_test_cases_new[i], nrow_test, nrow)
 	} else {
 		// The best individual will not be changed
 		copy(sem_train_cases_new[i], sem_train_cases[i])
@@ -778,13 +797,8 @@ func geometric_semantic_crossover(i int) {
 func geometric_semantic_mutation(i int) {
 	if i != index_best {
 		// Replace the individual with a mutated version
-		rt1 := create_grow_tree(0, nil, *config.max_depth_creation)
-		rt2 := create_grow_tree(0, nil, *config.max_depth_creation)
-
-		sem_rt1 := semantic_evaluate_random(rt1, nrow, 0)
-		sem_rt1_test := semantic_evaluate_random(rt1, nrow_test, nrow)
-		sem_rt2 := semantic_evaluate_random(rt2, nrow, 0)
-		sem_rt2_test := semantic_evaluate_random(rt2, nrow_test, nrow)
+		sem_rt1, sem_rt1_test := random_tree_semantics()
+		sem_rt2, sem_rt2_test := random_tree_semantics()
 
 		mut_step := rand.Float64()
 
@@ -887,9 +901,90 @@ func init_tables() {
 	}
 }
 
-func main() {
-	runtime.LockOSThread() // For CUDA context
+func cuda_tree_generator() {
+	// CUDA context is bound to a specific thread, therefore it is necessary to lock this
+	// goroutine to the current thread
+	runtime.LockOSThread()
 
+	// Initialize CUDA environment
+	cuda.Init()
+	devs := cuda.GetDevices()
+	maj, min := cuda.GetNVRTCVersion()
+	fmt.Println("CUDA Driver Version:", cuda.GetVersion())
+	fmt.Println("NVRTC Version:", maj, min)
+	fmt.Println("CUDA Num devices:", cuda.GetDevicesCount())
+	fmt.Println("Compute devices")
+	for i, d := range devs {
+		fmt.Printf("Device %d: %s %v bytes of memory\n", i, d.Name, d.TotalMem)
+		mbx, mby, mbz := d.GetMaxBlockDim()
+		fmt.Println("Max block size:", mbx, mby, mbz)
+		mgx, mgy, mgz := d.GetMaxGridDim()
+		fmt.Println("Max grid size:", mgx, mgy, mgz)
+	}
+	// Create context and make it current
+	ctx := cuda.Create(devs[0], 0)
+	runtime.SetFinalizer(ctx, func(interface{}) { fmt.Println("FINALIZER FOR CTX called!") })
+	defer ctx.Destroy() // When done
+	//ctx.SetCurrent()
+	fmt.Println("Context API version:", ctx.GetApiVersion())
+	ctx.Synchronize()
+	fmt.Println("CUDA initialized successfully")
+
+	// Allocate memory for GPU computation
+	len_ds := C.size_t(nrow + nrow_test)
+	num_vars := C.size_t(nvar + 1)
+	cpu_out := make([]float64, nrow+nrow_test)            //(*[1 << 30]C.double)(C.malloc(C.sizeof_double * len_ds))
+	cpu_set := make([]float64, (nrow+nrow_test)*(nvar+1)) //(*[1 << 30]C.double)(C.malloc(C.sizeof_double * len_ds * num_vars))
+	gpu_out := cuda.NewBuffer(int(C.sizeof_double * len_ds))
+	gpu_set := cuda.NewBuffer(int(C.sizeof_double * len_ds * num_vars))
+	// Copy datasets
+	for i := 0; i < nrow+nrow_test; i++ {
+		for j := 0; j < nvar; j++ {
+			cpu_set[i*(nvar+1)+j] = set[i].vars[j] //C.double(set[i].vars[j])
+		}
+		cpu_set[i*(nvar+1)+nvar] = set[i].y_value //C.double(set[i].y_value)
+	}
+	// Transfer to GPU
+	gpu_set.FromHost(unsafe.Pointer(&cpu_set[0]))
+	// Prepare kernel launch
+	tpb := 256 // TODO Get this from attr
+	bpg := (nrow + nrow_test + tpb - 1) / tpb
+
+	// Create a tree and convert it to a kernel function
+	test_tree := create_grow_tree(0, nil, *config.max_depth_creation)
+	test_src := eval_to_kernel(test_tree, "kernel_test")
+
+	mod := cuda.CreateModule()
+	// This goroutine will keep producing random trees
+	for {
+		//fmt.Println("Generating tree with CUDA...")
+		// Compile the function and load on device
+		prog := cuda.CreateProgram(cuda.Source{test_src, "kernel_test"}, nil)
+		prog.Compile(nil)
+		mod.LoadData(prog)
+		// Get the function and run
+		kernel := mod.GetFunction("kernel_test")
+		kernel.Launch1D(bpg, tpb, 0, gpu_out, gpu_set)
+		// Create next tree while kernel is executing
+		test_tree = create_grow_tree(0, nil, *config.max_depth_creation)
+		test_src = eval_to_kernel(test_tree, "kernel_test")
+		// Copy back the results
+		cpu_out = make(Semantic, nrow+nrow_test)
+		gpu_out.FromDevice(unsafe.Pointer(&cpu_out[0]))
+		semchan <- cpu_out
+		/*
+			// Convert to semantics
+			sem := make(Semantic, nrow+nrow_test)
+			for i := 0; i < nrow+nrow_test; i++ {
+				sem[i] = float64(cpu_out[i])
+			}
+			// Enqueue this results
+			semchan <- sem
+		*/
+	}
+}
+
+func main() {
 	// Parse CLI arguments: if they are set, they override config file
 	flag.Parse()
 
@@ -902,7 +997,9 @@ func main() {
 		return
 	}
 
-	fmt.Println("NumCPU:", runtime.NumCPU())
+	if *config.use_goroutines {
+		fmt.Println("Using goroutines with", runtime.NumCPU(), "CPUs")
+	}
 
 	if *cpuprofile != "" {
 		f, err := os.Create(*cpuprofile)
@@ -921,49 +1018,6 @@ func main() {
 			sem_seed = append(sem_seed, path)
 		}
 	}
-
-	// Initialize CUDA environment
-	cuda.Init()
-	devs := cuda.GetDevices()
-	if true {
-		maj, min := cuda.GetNVRTCVersion()
-		fmt.Println("CUDA Driver Version:", cuda.GetVersion())
-		fmt.Println("NVRTC Version:", maj, min)
-		fmt.Println("CUDA Num devices:", cuda.GetDevicesCount())
-		fmt.Println("Compute devices")
-		for i, d := range devs {
-			fmt.Printf("Device %d: %s %v bytes of memory\n", i, d.Name, d.TotalMem)
-			mbx, mby, mbz := d.GetMaxBlockDim()
-			fmt.Println("Max block size:", mbx, mby, mbz)
-			mgx, mgy, mgz := d.GetMaxGridDim()
-			fmt.Println("Max grid size:", mgx, mgy, mgz)
-		}
-	}
-
-	// CUDA context is bound to a specific thread, therefore it is necessary to lock this
-	// goroutine to the current thread
-	runtime.LockOSThread()
-	// Create context and make it current
-	ctx := cuda.Create(devs[0], 0)
-	runtime.SetFinalizer(ctx, func(interface{}) { fmt.Println("FINALIZER FOR CTX called!") })
-	//defer ctx.Destroy() // When done
-	//ctx.SetCurrent()
-	fmt.Println("Context API version:", ctx.GetApiVersion())
-
-	prog := cuda.CreateProgram(cuda.Source{`
-extern "C" __global__
-void somma(int *a, int *b, int *c, int *len) {
-	int i = blockIdx.x * blockDim.x + threadIdx.x;
-	if (i < *len)
-		c[i] = a[i] + b[i];
-}`, "somma"}, nil)
-	prog.Compile(nil)
-
-	mod := cuda.CreateModule()
-	mod.LoadData(prog)
-	kernel := mod.GetFunction("somma")
-
-	fmt.Println("CUDA initialized successfully")
 
 	// Create some files for output data
 	executiontime := create_or_panic("execution_time.txt")
@@ -984,43 +1038,11 @@ void somma(int *a, int *b, int *c, int *len) {
 	// Create tables with terminals and functionals
 	create_T_F()
 
-	fmt.Println("CUDA ctx sync...")
-	ctx.Synchronize()
-	fmt.Println("Synched")
-
-	// Allocate memory for storing semantic data
-	cuda_data_size := C.size_t(nrow + nrow_test)
-	hlen := (*[1]C.int)(C.malloc(C.sizeof_int)) // Number of elements
-	defer C.free(unsafe.Pointer(&hlen[0]))
-	ha := (*[1 << 30]C.int)(C.malloc(C.sizeof_int * cuda_data_size))
-	defer C.free(unsafe.Pointer(&ha[0]))
-	hb := (*[1 << 30]C.int)(C.malloc(C.sizeof_int * cuda_data_size))
-	defer C.free(unsafe.Pointer(&hb[0]))
-	hc := (*[1 << 30]C.int)(C.malloc(C.sizeof_int * cuda_data_size))
-	defer C.free(unsafe.Pointer(&hc[0]))
-
-	for i := 0; i < int(cuda_data_size); i++ {
-		ha[i] = C.int(i + 1)
-		hb[i] = C.int(10000 - i*i)
-		hc[i] = -1
+	if *config.use_cuda {
+		// A separate goroutine will handle CUDA
+		semchan = make(chan Semantic, 4)
+		go cuda_tree_generator()
 	}
-
-	dlen := cuda.NewBuffer(C.sizeof_int)
-	da := cuda.NewBuffer(int(C.sizeof_int * cuda_data_size))
-	db := cuda.NewBuffer(int(C.sizeof_int * cuda_data_size))
-	dc := cuda.NewBuffer(int(C.sizeof_int * cuda_data_size))
-
-	dlen.FromHost(unsafe.Pointer(&hlen[0]))
-	da.FromHost(unsafe.Pointer(&ha[0]))
-	db.FromHost(unsafe.Pointer(&hb[0]))
-
-	tpb := 256 // Get this from attr
-	bpg := (nrow + nrow_test + tpb - 1) / tpb
-	kernel.Launch1D(bpg, tpb, 0, da, db, dc, dlen)
-
-	dc.FromDevice(unsafe.Pointer(&hc[0]))
-
-	fmt.Println("CUDA compute done")
 
 	// Create population and feed
 	p := NewPopulation(sem_seed...)
@@ -1035,10 +1057,6 @@ void somma(int *a, int *b, int *c, int *len) {
 
 	elapsedTime := time.Since(start) / time.Millisecond
 	fmt.Fprintln(executiontime, elapsedTime)
-
-	// Test some kernels
-	//fmt.Println(eval_to_kernel(create_grow_tree(0, nil, *config.max_depth_creation), "foobar"))
-	//panic("Fatto")
 
 	// main GP cycle
 	for num_gen := 0; num_gen < *config.max_number_generations; num_gen++ {
@@ -1067,7 +1085,5 @@ void somma(int *a, int *b, int *c, int *len) {
 		elapsedTime += time.Since(gen_start) / time.Millisecond
 		fmt.Fprintln(executiontime, elapsedTime)
 	}
-
-	//runtime.KeepAlive(ctx)
-	ctx.Destroy() // When done
+	fmt.Println("Total elapsed time since start:", time.Since(start))
 }
