@@ -450,6 +450,61 @@ func create_grow_tree(depth int, parent *Node, max_depth int) *Node {
 	}
 }
 
+func create_grow_tree_arrays(depth, max_depth, base_index int) []int {
+	if depth == 0 && !*config.zero_depth {
+		// No zero-depth inviduals allowed: start with a functional
+		op := choose_function()
+		tree := make([]int, symbols[op].arity+1)
+		tree[0] = op
+		// Create children trees
+		for c := 1; c <= symbols[op].arity; c++ {
+			tree[c] = len(tree) + base_index
+			child := create_grow_tree_arrays(depth+1, max_depth, tree[c])
+			tree = append(tree, child...)
+		}
+		return tree
+	}
+	if depth == max_depth {
+		return []int{choose_terminal()}
+	}
+	if rand.Intn(2) == 0 {
+		return []int{choose_terminal()}
+	} else {
+		op := choose_function()
+		tree := make([]int, symbols[op].arity+1)
+		tree[0] = op
+		for c := 1; c <= symbols[op].arity; c++ {
+			tree[c] = len(tree) + base_index
+			child := create_grow_tree_arrays(depth+1, max_depth, tree[c])
+			tree = append(tree, child...)
+		}
+		return tree
+	}
+}
+
+func eval_arrays(tree []int, start, i int) float64 {
+	switch {
+	case symbols[tree[start]].name == "+":
+		return eval_arrays(tree, tree[start+1], i+1) + eval_arrays(tree, tree[start+2], i+1)
+	case symbols[tree[start]].name == "-":
+		return eval_arrays(tree, tree[start+1], i+1) - eval_arrays(tree, tree[start+2], i+1)
+	case symbols[tree[start]].name == "*":
+		return eval_arrays(tree, tree[start+1], i+1) * eval_arrays(tree, tree[start+2], i+1)
+	case symbols[tree[start]].name == "/":
+		return protected_division(eval_arrays(tree, tree[start+1], i+1), eval_arrays(tree, tree[start+2], i+1))
+	case symbols[tree[start]].name == "sqrt":
+		v := eval_arrays(tree, tree[start+1], i+1)
+		if v < 0 {
+			return math.Sqrt(-v)
+		} else {
+			return math.Sqrt(v)
+		}
+	default:
+		fmt.Println("Found terminal", symbols[tree[start]], "corresponding to value", tree[start], "at position", start)
+		return terminal_value(i, symbols[tree[start]]) // Root points to a terminal
+	}
+}
+
 // Creates a tree with depth equal to the ones specified by the parameter max_depth
 func create_full_tree(depth int, parent *Node, max_depth int) *Node {
 	if depth == 0 && depth < max_depth {
@@ -721,9 +776,12 @@ func semantic_evaluate_random(el *Node, sem_size, sem_offs int) Semantic {
 func random_tree_semantics() (Semantic, Semantic) {
 	if !*config.use_cuda {
 		// Generate a random tree and compute its semantic (train and test)
+		now := time.Now()
 		rt := create_grow_tree(0, nil, *config.max_depth_creation)
 		sem_train := semantic_evaluate_random(rt, nrow, 0)
 		sem_test := semantic_evaluate_random(rt, nrow_test, nrow)
+		tot_time := time.Since(now)
+		fmt.Println("Time to generate and evaluate a tree:", tot_time)
 		return sem_train, sem_test
 	} else {
 		// Get semantic from GPU
@@ -901,7 +959,12 @@ func init_tables() {
 	}
 }
 
+// TODO alternative approach: instead of generating source codes and compiling them
+// it could be better to let the kernel evaluate the tree. To make it easier to pass the data around
+// the tree could be implemented using an array instead of linked nodes
 func cuda_tree_generator() {
+	now := time.Now()
+
 	// CUDA context is bound to a specific thread, therefore it is necessary to lock this
 	// goroutine to the current thread
 	runtime.LockOSThread()
@@ -950,27 +1013,46 @@ func cuda_tree_generator() {
 	tpb := 256 // TODO Get this from attr
 	bpg := (nrow + nrow_test + tpb - 1) / tpb
 
+	setup_time := time.Since(now)
+	fmt.Println("CUDA Setup time:", setup_time)
+
+	mod := cuda.CreateModule()
+
+	var build_time, create_time, running_time time.Duration
+	var build_count, create_count, running_count time.Duration
+
+	now = time.Now()
 	// Create a tree and convert it to a kernel function
 	test_tree := create_grow_tree(0, nil, *config.max_depth_creation)
 	test_src := eval_to_kernel(test_tree, "kernel_test")
+	create_time = time.Since(now)
+	create_count++
 
-	mod := cuda.CreateModule()
 	// This goroutine will keep producing random trees
 	for {
 		//fmt.Println("Generating tree with CUDA...")
+		now = time.Now()
 		// Compile the function and load on device
 		prog := cuda.CreateProgram(cuda.Source{test_src, "kernel_test"}, nil)
 		prog.Compile(nil)
 		mod.LoadData(prog)
 		// Get the function and run
 		kernel := mod.GetFunction("kernel_test")
+		build_time += time.Since(now)
+		build_count++
+		now = time.Now()
 		kernel.Launch1D(bpg, tpb, 0, gpu_out, gpu_set)
-		// Create next tree while kernel is executing
-		test_tree = create_grow_tree(0, nil, *config.max_depth_creation)
-		test_src = eval_to_kernel(test_tree, "kernel_test")
 		// Copy back the results
 		cpu_out = make(Semantic, nrow+nrow_test)
 		gpu_out.FromDevice(unsafe.Pointer(&cpu_out[0]))
+		running_time += time.Since(now)
+		running_count++
+		// Create next tree while kernel is executing
+		now = time.Now()
+		test_tree = create_grow_tree(0, nil, *config.max_depth_creation)
+		test_src = eval_to_kernel(test_tree, "kernel_test")
+		create_time += time.Since(now) // Accumulate timing for kernel building
+		create_count++
 		semchan <- cpu_out
 		/*
 			// Convert to semantics
@@ -981,6 +1063,11 @@ func cuda_tree_generator() {
 			// Enqueue this results
 			semchan <- sem
 		*/
+
+		// Print out some stats
+		if create_count%10 == 0 {
+			fmt.Println("Timing stats averages. create_time:", (create_time / create_count), "build_time:", (build_time / build_count), "running_time", (running_time / running_count))
+		}
 	}
 }
 
@@ -1042,6 +1129,14 @@ func main() {
 		// A separate goroutine will handle CUDA
 		semchan = make(chan Semantic, 4)
 		go cuda_tree_generator()
+	}
+
+	// Test arrays
+	if true {
+		t := create_grow_tree_arrays(0, *config.max_depth_creation, 0)
+		fmt.Println(t)
+		fmt.Println(eval_arrays(t, 0, 0))
+		os.Exit(0)
 	}
 
 	// Create population and feed
