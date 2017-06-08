@@ -97,7 +97,8 @@ type Semantic []float64
 var (
 	// Create flag/configuration variables with default values (in case config file is missing)
 	config_file = flag.String("config", "configuration.ini", "Path of the configuration file")
-	config      = Config{
+	// Config is initially filled with default values, before init() is executed
+	config = Config{
 		population_size:        flag.Int("population_size", 200, "Number of candidate solutions"),
 		max_number_generations: flag.Int("max_number_generations", 300, "Number of generations of the GP algorithm"),
 		init_type:              flag.Int("init_type", 2, "Initialization method: 0 -> grow, 1 -> full, 2 -> ramped h&h"),
@@ -124,7 +125,7 @@ var (
 	NUM_CONSTANT_SYMBOLS   int // Number of terminal symbols for constants
 
 	// Terminal and functional symbols
-	// This slice is filled only by create_T_F() and search_terminal_or_add()
+	// This slice is filled only by create_T_F() and add_symbol() (which is used by read_sem() on initialization)
 	// len(symbols) == NUM_FUNCTIONAL_SYMBOLS+NUM_VARIABLE_SYMBOLS+NUM_CONSTANT_SYMBOLS
 	// In this slice, first you find NUM_FUNCTIONAL_SYMBOLS symbols, then
 	// NUM_VARIABLE_SYMBOLS symbols, finally NUM_CONSTANT_SYMBOLS symbols
@@ -152,7 +153,7 @@ var (
 )
 
 func init() {
-	// lettura qui così ci permette di usare un path diverso per il config file
+	// Reading the config here allows to use a different config file path, as init is executed after variables initialization
 	// Read variables: if present in the config, they will override the defaults
 	read_config_file(*config_file)
 }
@@ -207,7 +208,6 @@ func read_config_file(path string) {
 			*config.mutation_step = atof(fields[1])
 		case "num_random_constants":
 			*config.num_random_constants = atoi(fields[1])
-			NUM_CONSTANT_SYMBOLS = *config.num_random_constants
 		case "min_random_constant":
 			*config.min_random_constant = atof(fields[1])
 		case "max_random_constant":
@@ -280,6 +280,7 @@ func create_T_F() {
 		name  string
 		arity int
 	}{
+		// When changing these, remember to change the kernel accordingly
 		{"+", 2},
 		{"-", 2},
 		{"*", 2},
@@ -303,7 +304,7 @@ func create_T_F() {
 	}
 }
 
-// choose_function randomly selects a functional symbol
+// choose_function randomly selects a functional symbol and returns its ID
 func choose_function() int {
 	return rand.Intn(NUM_FUNCTIONAL_SYMBOLS)
 }
@@ -453,12 +454,12 @@ func create_grow_tree(depth int, parent *Node, max_depth int) *Node {
 func create_grow_tree_arrays(depth, max_depth, base_index int) []int {
 	if depth == 0 && !*config.zero_depth {
 		// No zero-depth inviduals allowed: start with a functional
-		op := choose_function()
-		tree := make([]int, symbols[op].arity+1)
-		tree[0] = op
+		op := choose_function()                  // Get ID of the selected functional
+		tree := make([]int, symbols[op].arity+1) // Create space for ID and children pointers
+		tree[0] = op                             // Save functional ID in first location
 		// Create children trees
 		for c := 1; c <= symbols[op].arity; c++ {
-			tree[c] = len(tree) + base_index
+			tree[c] = len(tree) + base_index // Save child position in next location
 			child := create_grow_tree_arrays(depth+1, max_depth, tree[c])
 			tree = append(tree, child...)
 		}
@@ -479,29 +480,6 @@ func create_grow_tree_arrays(depth, max_depth, base_index int) []int {
 			tree = append(tree, child...)
 		}
 		return tree
-	}
-}
-
-func eval_arrays(tree []int, start, i int) float64 {
-	switch {
-	case symbols[tree[start]].name == "+":
-		return eval_arrays(tree, tree[start+1], i+1) + eval_arrays(tree, tree[start+2], i+1)
-	case symbols[tree[start]].name == "-":
-		return eval_arrays(tree, tree[start+1], i+1) - eval_arrays(tree, tree[start+2], i+1)
-	case symbols[tree[start]].name == "*":
-		return eval_arrays(tree, tree[start+1], i+1) * eval_arrays(tree, tree[start+2], i+1)
-	case symbols[tree[start]].name == "/":
-		return protected_division(eval_arrays(tree, tree[start+1], i+1), eval_arrays(tree, tree[start+2], i+1))
-	case symbols[tree[start]].name == "sqrt":
-		v := eval_arrays(tree, tree[start+1], i+1)
-		if v < 0 {
-			return math.Sqrt(-v)
-		} else {
-			return math.Sqrt(v)
-		}
-	default:
-		fmt.Println("Found terminal", symbols[tree[start]], "corresponding to value", tree[start], "at position", start)
-		return terminal_value(i, symbols[tree[start]]) // Root points to a terminal
 	}
 }
 
@@ -638,6 +616,29 @@ func eval(tree *Node, i int) float64 {
 		}
 	default:
 		return terminal_value(i, tree.root) // Root points to a terminal
+	}
+}
+
+func eval_arrays(tree []int, start, i int) float64 {
+	switch {
+	case symbols[tree[start]].name == "+":
+		return eval_arrays(tree, tree[start+1], i) + eval_arrays(tree, tree[start+2], i)
+	case symbols[tree[start]].name == "-":
+		return eval_arrays(tree, tree[start+1], i) - eval_arrays(tree, tree[start+2], i)
+	case symbols[tree[start]].name == "*":
+		return eval_arrays(tree, tree[start+1], i) * eval_arrays(tree, tree[start+2], i)
+	case symbols[tree[start]].name == "/":
+		return protected_division(eval_arrays(tree, tree[start+1], i), eval_arrays(tree, tree[start+2], i))
+	case symbols[tree[start]].name == "sqrt":
+		v := eval_arrays(tree, tree[start+1], i)
+		if v < 0 {
+			return math.Sqrt(-v)
+		} else {
+			return math.Sqrt(v)
+		}
+	default:
+		fmt.Println("Found terminal", symbols[tree[start]], "corresponding to value", tree[start], "at position", start)
+		return terminal_value(i, symbols[tree[start]]) // Root points to a terminal
 	}
 }
 
@@ -959,6 +960,12 @@ func init_tables() {
 	}
 }
 
+type Arities []int
+
+func (a Arities) String() string {
+	return fmt.Sprintf("[%d] = {%v}", len(a), strings.Trim(strings.Replace(fmt.Sprint(([]int)(a)), " ", ", ", -1), "[]"))
+}
+
 // TODO alternative approach: instead of generating source codes and compiling them
 // it could be better to let the kernel evaluate the tree. To make it easier to pass the data around
 // the tree could be implemented using an array instead of linked nodes
@@ -986,7 +993,6 @@ func cuda_tree_generator() {
 	}
 	// Create context and make it current
 	ctx := cuda.Create(devs[0], 0)
-	runtime.SetFinalizer(ctx, func(interface{}) { fmt.Println("FINALIZER FOR CTX called!") })
 	defer ctx.Destroy() // When done
 	//ctx.SetCurrent()
 	fmt.Println("Context API version:", ctx.GetApiVersion())
@@ -994,12 +1000,14 @@ func cuda_tree_generator() {
 	fmt.Println("CUDA initialized successfully")
 
 	// Allocate memory for GPU computation
-	len_ds := C.size_t(nrow + nrow_test)
-	num_vars := C.size_t(nvar + 1)
-	cpu_out := make([]float64, nrow+nrow_test)            //(*[1 << 30]C.double)(C.malloc(C.sizeof_double * len_ds))
-	cpu_set := make([]float64, (nrow+nrow_test)*(nvar+1)) //(*[1 << 30]C.double)(C.malloc(C.sizeof_double * len_ds * num_vars))
-	gpu_out := cuda.NewBuffer(int(C.sizeof_double * len_ds))
-	gpu_set := cuda.NewBuffer(int(C.sizeof_double * len_ds * num_vars))
+	var (
+		len_ds   = C.size_t(nrow + nrow_test)
+		num_vars = C.size_t(nvar + 1)
+		cpu_out  = make([]float64, nrow+nrow_test)
+		cpu_set  = make([]float64, (nrow+nrow_test)*(nvar+1))
+		gpu_out  = cuda.NewBuffer(int(C.sizeof_double * len_ds))
+		gpu_set  = cuda.NewBuffer(int(C.sizeof_double * len_ds * num_vars))
+	)
 	// Copy datasets
 	for i := 0; i < nrow+nrow_test; i++ {
 		for j := 0; j < nvar; j++ {
@@ -1009,6 +1017,145 @@ func cuda_tree_generator() {
 	}
 	// Transfer to GPU
 	gpu_set.FromHost(unsafe.Pointer(&cpu_set[0]))
+
+	// Copy symbol table to GPU
+	var (
+		cpu_sym_val = make([]float64, len(symbols))
+		gpu_sym_val = cuda.NewBuffer(C.sizeof_double * len(symbols))
+
+		// I/O buffers
+		gpu_in_id     = cuda.NewBuffer(C.sizeof_int)
+		gpu_out_type  = cuda.NewBuffer(C.sizeof_int)
+		gpu_out_arity = cuda.NewBuffer(C.sizeof_int)
+		gpu_out_name  = cuda.NewBuffer(C.sizeof_int)
+		gpu_out_val   = cuda.NewBuffer(C.sizeof_double)
+
+		// Eval of array
+		gpu_tree_arr = cuda.NewBuffer(C.sizeof_int * 1000) // Make this large enough for any generated tree TODO compute this value
+
+		gpu_out_average = cuda.NewBuffer(C.sizeof_double)
+	)
+	// Copy symbols value
+	for i := range symbols {
+		if !symbols[i].isFunc {
+			cpu_sym_val[i] = symbols[i].value
+		}
+	}
+	gpu_sym_val.FromHost(unsafe.Pointer(&cpu_sym_val[0]))
+
+	tttkkk := fmt.Sprintf(`extern "C" __global__
+void get_symbol(double *sym, double *set, int *id, int *out_type, int *out_arity, int *out_name, double *out_val) {
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+	// Order of appearance in the symbols table
+	const int NUM_FUNCTIONAL_SYMBOLS = %d;
+	const int NUM_VARIABLE_SYMBOLS = %d;
+	const int NUM_CONSTANT_SYMBOLS = %d;
+	const int NROWS = %d;
+	// These are hard-coded as in create_T_F()
+	// FIXME these can be removed if operator IDs are fixed
+	const int arities[5] = {2, 2, 2, 2, 1};
+	const int names[5] = {'+', '-', '*', '/', 's'};
+
+	if (i != 0)
+		return;
+
+	*out_name = *id;
+	*out_val = 3.14159265;
+	if (*id < NUM_FUNCTIONAL_SYMBOLS) {
+		*out_type = 1; // Functional
+		*out_arity = arities[*id];
+		*out_name = names[*id];
+		switch (names[*id]) { // FIXME can be changed into a simple integer
+		case '+': *out_val = 1111; break;
+		case '-': *out_val = 2222; break;
+		case '*': *out_val = 3333; break;
+		case '/': *out_val = 4444; break;
+		case 's': *out_val = 5555; break;
+		}
+	}
+	if (*id >= NUM_FUNCTIONAL_SYMBOLS && *id < NUM_FUNCTIONAL_SYMBOLS+NUM_VARIABLE_SYMBOLS) {
+		*out_type = 2; // Variable
+		*out_arity = *id - NUM_FUNCTIONAL_SYMBOLS;
+		*out_name = 0;
+		*out_val = set[i * NROWS + (*id - NUM_FUNCTIONAL_SYMBOLS)];
+	}
+	if (*id >= NUM_FUNCTIONAL_SYMBOLS+NUM_VARIABLE_SYMBOLS) {
+		*out_type = 3; // Constant
+		*out_arity = -1;
+		*out_name = 0;
+		*out_val = sym[*id];
+	}
+}
+`, NUM_FUNCTIONAL_SYMBOLS, NUM_VARIABLE_SYMBOLS, NUM_CONSTANT_SYMBOLS, int(len_ds))
+
+	blahblah := fmt.Sprintf(`extern "C" __device__
+double eval_arrays(double *sym, double *set, int *tree, int start) {
+	return sym[tree[start + 1]];
+
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+	// Order of appearance in the symbols table
+	const int NUM_FUNCTIONAL_SYMBOLS = %d;
+	const int NUM_VARIABLE_SYMBOLS = %d;
+	const int NUM_CONSTANT_SYMBOLS = %d;
+	const int NROWS = %d;
+
+	// These are hard-coded as in create_T_F()
+	// FIXME this can be removed if operator IDs are fixed
+	const int names[5] = {'+', '-', '*', '/', 's'};
+
+	int id = tree[start];
+	if (id < NUM_FUNCTIONAL_SYMBOLS) {
+		switch (names[id]) {
+			case '+': {
+				double v1 = eval_arrays(sym, set, tree, tree[start+1]);
+				double v2 = eval_arrays(sym, set, tree, tree[start+1]);
+				return v1 + v2;
+			}
+			case '-': {
+				double v1 = eval_arrays(sym, set, tree, tree[start+1]);
+				double v2 = eval_arrays(sym, set, tree, tree[start+1]);
+				return v1 - v2;
+			}
+			case '*': {
+				double v1 = eval_arrays(sym, set, tree, tree[start+1]);
+				double v2 = eval_arrays(sym, set, tree, tree[start+1]);
+				return v1 * v2;
+			}
+			case '/': {
+				double v1 = eval_arrays(sym, set, tree, tree[start+1]);
+				double v2 = eval_arrays(sym, set, tree, tree[start+1]);
+				if (v2 == 0)
+					return 1;
+				else
+					return v1 / v2;
+			}
+			default: {
+				double v = eval_arrays(sym, set, tree, tree[start+1]);
+				if (v < 0)
+					return sqrt(-v);
+				else
+					return sqrt(v);
+			}
+		}
+	}
+	if (id >= NUM_FUNCTIONAL_SYMBOLS && id < NUM_FUNCTIONAL_SYMBOLS + NUM_VARIABLE_SYMBOLS) {
+		return set[i * NROWS + id - NUM_FUNCTIONAL_SYMBOLS];
+	}
+	if (id >= NUM_FUNCTIONAL_SYMBOLS+NUM_VARIABLE_SYMBOLS) {
+		return sym[id];
+	}
+}
+
+extern "C" __global__
+void semantic_eval_arrays(double *sym, double *set, int *tree, double *average) {
+	//__shared__ double sh[123];
+	double res = eval_arrays(sym, set, tree, 0);
+	*average = res;
+}
+`, NUM_FUNCTIONAL_SYMBOLS, NUM_VARIABLE_SYMBOLS, NUM_CONSTANT_SYMBOLS, int(len_ds))
+
 	// Prepare kernel launch
 	tpb := 256 // TODO Get this from attr
 	bpg := (nrow + nrow_test + tpb - 1) / tpb
@@ -1027,6 +1174,91 @@ func cuda_tree_generator() {
 	test_src := eval_to_kernel(test_tree, "kernel_test")
 	create_time = time.Since(now)
 	create_count++
+
+	// Test arrays
+	if true {
+		tttkkk = tttkkk
+
+		fmt.Println("Kernel being used:\n", blahblah)
+
+		/*
+			prog := cuda.CreateProgram(cuda.Source{tttkkk, "get_symbol"}, nil)
+			prog.Compile(nil)
+			mod.LoadData(prog)
+			kern := mod.GetFunction("get_symbol")
+		*/
+
+		prog := cuda.CreateProgram(cuda.Source{blahblah, "semantic_eval_arrays"}, nil)
+		prog.Compile(nil)
+		mod.LoadData(prog)
+		kern := mod.GetFunction("semantic_eval_arrays")
+
+		// Get random symbol
+		symid := rand.Intn(len(symbols))
+		gpu_in_id.FromInt(symid)
+
+		fmt.Println("++++ Selected random symbol", symid)
+		fmt.Println("   isFunc: ", symbols[symid].isFunc)
+		fmt.Println("   Arity : ", symbols[symid].arity)
+		fmt.Println("   Name  : ", symbols[symid].name)
+		fmt.Println("   ID    : ", symbols[symid].id)
+		fmt.Println("   Value : ", symbols[symid].value)
+
+		fmt.Println("")
+
+		cpu_tree_arr := create_grow_tree_arrays(0, *config.max_depth_creation, 0)
+		fmt.Println("Created tree", cpu_tree_arr)
+		// Transfer only the required elements in the buffer
+		gpu_tree_arr.FromHostN(unsafe.Pointer(&cpu_tree_arr[0]), int(C.sizeof_int)*len(cpu_tree_arr))
+		//kern.Launch1D(bpg, tpb, 0, gpu_sym_val, gpu_set, gpu_in_id, gpu_out_type, gpu_out_arity, gpu_out_name, gpu_out_val)
+
+		kern.Launch1D(bpg, tpb, 0, gpu_sym_val, gpu_set, gpu_tree_arr, gpu_out_average)
+
+		ctx.Synchronize()
+
+		fmt.Println("Output from kernel:", gpu_out_average.ToDouble())
+
+		var (
+			out_type  = gpu_out_type.ToInt()
+			out_arity = gpu_out_arity.ToInt()
+			out_name  = gpu_out_name.ToInt()
+			out_val   = gpu_out_val.ToDouble()
+		)
+
+		types := []string{"functional", "variable", "constant"}
+
+		fmt.Println("RESULTS")
+		fmt.Println("    Type :", out_type, types[out_type-1])
+		fmt.Println("    Arity:", out_arity)
+		fmt.Println("    Name :", out_name)
+		fmt.Println("    Value:", out_val)
+
+		if symbols[symid].isFunc && out_type != 1 {
+			fmt.Println("  ERROR: CUDA is not reporting symbol as a functional")
+		}
+		if symbols[symid].isFunc && symbols[symid].arity != out_arity {
+			fmt.Println("  ERROR: CUDA arity is different from true arity")
+		}
+		if symid >= NUM_FUNCTIONAL_SYMBOLS && symid < NUM_FUNCTIONAL_SYMBOLS+NUM_VARIABLE_SYMBOLS && out_type != 2 {
+			fmt.Println("  ERROR: CUDA is reporting a different type instead of variable")
+		}
+		/*
+				// Variables take their value from the input data
+				return set[i].vars[sym.id-NUM_FUNCTIONAL_SYMBOLS]
+			} else {
+				// The value of a constant can be used directly
+				return sym.value
+			}
+		*/
+
+		t := create_grow_tree_arrays(0, *config.max_depth_creation, 0)
+		fmt.Println(t)
+		fmt.Println(eval_arrays(t, 0, 0))
+
+		// Copy array to GPU
+
+		os.Exit(0)
+	}
 
 	// This goroutine will keep producing random trees
 	for {
@@ -1072,8 +1304,10 @@ func cuda_tree_generator() {
 }
 
 func main() {
-	// Parse CLI arguments: if they are set, they override config file
+	// Parse CLI arguments: if they are set, they will override defaults and config file
 	flag.Parse()
+	// After config is read and flags are parsed
+	NUM_CONSTANT_SYMBOLS = *config.num_random_constants
 
 	if *config.path_in == "" {
 		fmt.Println("Please specify the train dataset using the train_file option")
@@ -1130,6 +1364,8 @@ func main() {
 		semchan = make(chan Semantic, 4)
 		go cuda_tree_generator()
 	}
+
+	time.Sleep(40 * time.Second)
 
 	// Test arrays
 	if true {
