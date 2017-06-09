@@ -41,10 +41,17 @@ import (
 	"unsafe"
 )
 
+type cInt C.int
+type cFloat64 C.double
+
+func exp64(v cFloat64) cFloat64 {
+	return cFloat64(math.Exp(float64(v)))
+}
+
 // Instance represent a single training/test instance in memory
 type Instance struct {
-	vars    []float64 // Values of the input (independent) variables
-	y_value float64   // Target value
+	vars    []cFloat64 // Values of the input (independent) variables
+	y_value cFloat64   // Target value
 }
 
 // Config stores the parameters of a configuration.ini file
@@ -70,11 +77,11 @@ type Config struct {
 
 // Symbol represents a symbol of the set T (terminal symbols) or F (functional symbols).
 type Symbol struct {
-	isFunc bool    // Functional or terminal
-	arity  int     // Number of arguments accepted by a symbol. Terminals have arity -1 when constants and the index of the variable otherwise
-	id     int     // Unique identifier for this symbol
-	name   string  // Symbolic name
-	value  float64 // Current value of terminal symbol
+	isFunc bool     // Functional or terminal
+	arity  cInt     // Number of arguments accepted by a symbol. Terminals have arity -1 when constants and the index of the variable otherwise
+	id     cInt     // Unique identifier for this symbol
+	name   string   // Symbolic name
+	value  cFloat64 // Current value of terminal symbol
 }
 
 // Node is used to represent a node of the tree.
@@ -87,12 +94,12 @@ type Node struct {
 // Population is used to represent a GP population.
 type Population struct {
 	individuals []*Node // Individuals' root node
-	num_ind     int     // Number of individuals in the population
+	num_ind     cInt    // Number of individuals in the population
 }
 
 // The Semantic of one individual is a vector as long as the dataset where each
 // component is the value obtaining by applying the individual to the datum.
-type Semantic []float64
+type Semantic []cFloat64
 
 var (
 	// Create flag/configuration variables with default values (in case config file is missing)
@@ -120,9 +127,9 @@ var (
 	}
 	cpuprofile = flag.String("cpuprofile", "", "Write CPU profile to file")
 
-	NUM_FUNCTIONAL_SYMBOLS int // Number of functional symbols
-	NUM_VARIABLE_SYMBOLS   int // Number of terminal symbols for variables
-	NUM_CONSTANT_SYMBOLS   int // Number of terminal symbols for constants
+	NUM_FUNCTIONAL_SYMBOLS cInt // Number of functional symbols
+	NUM_VARIABLE_SYMBOLS   cInt // Number of terminal symbols for variables
+	NUM_CONSTANT_SYMBOLS   cInt // Number of terminal symbols for constants
 
 	// Terminal and functional symbols
 	// This slice is filled only by create_T_F() and add_symbol() (which is used by read_sem() on initialization)
@@ -137,17 +144,17 @@ var (
 	nrow_test int        // Number of rows (instances) in test dataset
 	nvar_test int        // Number of input variables (columns excluding target) in test dataset FIXME unused
 
-	fit          []float64 // Training fitness values at generation g
-	fit_test     []float64 // Test fitness values at generation g
-	fit_new      []float64 // Training fitness values at current generation g+1
-	fit_test_new []float64 // Test fitness values at current generation g+1
+	fit          []cFloat64 // Training fitness values at generation g
+	fit_test     []cFloat64 // Test fitness values at generation g
+	fit_new      []cFloat64 // Training fitness values at current generation g+1
+	fit_test_new []cFloat64 // Test fitness values at current generation g+1
 
 	sem_train_cases     []Semantic // Semantics of the population, computed on training set, at generation g
 	sem_train_cases_new []Semantic // Semantics of the population, computed on training set, at current generation g+1
 	sem_test_cases      []Semantic // Semantics of the population, computed on test set, at generation g
 	sem_test_cases_new  []Semantic // Semantics of the population, computed on test set, at current generation g+1
 
-	index_best int // Index of the best individual (where? sem_*?)
+	index_best cInt // Index of the best individual (where? sem_*?)
 
 	semchan chan Semantic // Channel to move semantics fromm device to host
 )
@@ -158,7 +165,7 @@ func init() {
 	read_config_file(*config_file)
 }
 
-func square_diff(a, b float64) float64 { return (a - b) * (a - b) }
+func square_diff(a, b cFloat64) cFloat64 { return (a - b) * (a - b) }
 
 func atoi(s string) int {
 	v, err := strconv.Atoi(s)
@@ -255,18 +262,18 @@ func read_input_data(train_file, test_file string) {
 	nrow_test = atoi(next_token(in_test))
 	set = make([]Instance, nrow+nrow_test)
 	for i := 0; i < nrow; i++ {
-		set[i].vars = make([]float64, nvar)
+		set[i].vars = make([]cFloat64, nvar)
 		for j := 0; j < nvar; j++ {
-			set[i].vars[j] = atof(next_token(in))
+			set[i].vars[j] = cFloat64(atof(next_token(in)))
 		}
-		set[i].y_value = atof(next_token(in))
+		set[i].y_value = cFloat64(atof(next_token(in)))
 	}
 	for i := nrow; i < nrow+nrow_test; i++ {
-		set[i].vars = make([]float64, nvar)
+		set[i].vars = make([]cFloat64, nvar)
 		for j := 0; j < nvar; j++ {
-			set[i].vars[j] = atof(next_token(in_test))
+			set[i].vars[j] = cFloat64(atof(next_token(in_test)))
 		}
-		set[i].y_value = atof(next_token(in_test))
+		set[i].y_value = cFloat64(atof(next_token(in_test)))
 	}
 }
 
@@ -274,11 +281,11 @@ func read_input_data(train_file, test_file string) {
 // Names in created symbols shall not include the characters '(' or ')'
 // because they are used when reading and writing a tree to string
 func create_T_F() {
-	NUM_VARIABLE_SYMBOLS = nvar
+	NUM_VARIABLE_SYMBOLS = cInt(nvar)
 	// Create functional symbols
 	fs := []struct {
 		name  string
-		arity int
+		arity cInt
 	}{
 		// When changing these, remember to change the kernel accordingly
 		{"+", 2},
@@ -287,9 +294,9 @@ func create_T_F() {
 		{"/", 2},
 		{"sqrt", 1},
 	}
-	NUM_FUNCTIONAL_SYMBOLS = len(fs)
+	NUM_FUNCTIONAL_SYMBOLS = cInt(len(fs))
 	for i, s := range fs {
-		symbols = append(symbols, &Symbol{true, s.arity, i, s.name, 0})
+		symbols = append(symbols, &Symbol{true, s.arity, cInt(i), s.name, 0})
 	}
 	// Create terminal symbols for variables
 	for i := NUM_FUNCTIONAL_SYMBOLS; i < NUM_VARIABLE_SYMBOLS+NUM_FUNCTIONAL_SYMBOLS; i++ {
@@ -298,35 +305,35 @@ func create_T_F() {
 	}
 	// Create terminal symbols for constants
 	for i := NUM_VARIABLE_SYMBOLS + NUM_FUNCTIONAL_SYMBOLS; i < NUM_VARIABLE_SYMBOLS+NUM_FUNCTIONAL_SYMBOLS+NUM_CONSTANT_SYMBOLS; i++ {
-		a := *config.min_random_constant + rand.Float64()*(*config.max_random_constant-*config.min_random_constant)
+		a := cFloat64(*config.min_random_constant + rand.Float64()*(*config.max_random_constant-*config.min_random_constant))
 		str := fmt.Sprintf("%f", a)
 		symbols = append(symbols, &Symbol{false, -1, i, str, a})
 	}
 }
 
 // choose_function randomly selects a functional symbol and returns its ID
-func choose_function() int {
-	return rand.Intn(NUM_FUNCTIONAL_SYMBOLS)
+func choose_function() cInt {
+	return cInt(rand.Intn(int(NUM_FUNCTIONAL_SYMBOLS)))
 }
 
 // choose_terminal randomly selects a terminal symbol.
 // With probability 0.7 a variable is selected, while random constants have a probability of 0.3 to be selected.
 // To change these probabilities just change their values in the function.
 // It returns the ID of the chosen terminal symbol
-func choose_terminal() int {
+func choose_terminal() cInt {
 	if NUM_CONSTANT_SYMBOLS == 0 {
-		return NUM_FUNCTIONAL_SYMBOLS + rand.Intn(NUM_VARIABLE_SYMBOLS)
+		return NUM_FUNCTIONAL_SYMBOLS + cInt(rand.Intn(int(NUM_VARIABLE_SYMBOLS)))
 	}
 	if rand.Float64() < 0.7 {
-		return NUM_FUNCTIONAL_SYMBOLS + rand.Intn(NUM_VARIABLE_SYMBOLS)
+		return NUM_FUNCTIONAL_SYMBOLS + cInt(rand.Intn(int(NUM_VARIABLE_SYMBOLS)))
 	}
-	return NUM_FUNCTIONAL_SYMBOLS + NUM_VARIABLE_SYMBOLS + rand.Intn(NUM_CONSTANT_SYMBOLS)
+	return NUM_FUNCTIONAL_SYMBOLS + NUM_VARIABLE_SYMBOLS + cInt(rand.Intn(int(NUM_CONSTANT_SYMBOLS)))
 }
 
 // create_grow_pop creates a population using the grow method
 func create_grow_pop(p *Population) {
-	for p.num_ind < *config.population_size {
-		node := create_grow_tree(0, nil, *config.max_depth_creation)
+	for p.num_ind < cInt(*config.population_size) {
+		node := create_grow_tree(0, nil, cInt(*config.max_depth_creation))
 		p.individuals[p.num_ind] = node
 		p.num_ind++
 	}
@@ -334,8 +341,8 @@ func create_grow_pop(p *Population) {
 
 // Creates a population of full trees (each tree has a depth equal to the maximum length possible)
 func create_full_pop(p *Population) {
-	for p.num_ind < *config.population_size {
-		node := create_full_tree(0, nil, *config.max_depth_creation)
+	for p.num_ind < cInt(*config.population_size) {
+		node := create_full_tree(0, nil, cInt(*config.max_depth_creation))
 		p.individuals[p.num_ind] = node
 		p.num_ind++
 	}
@@ -343,35 +350,42 @@ func create_full_pop(p *Population) {
 
 // Creates a population with the ramped half and half algorithm.
 func create_ramped_pop(p *Population) {
-	var sub_pop, r, min_depth int
+	var (
+		population_size    = cInt(*config.population_size)
+		max_depth_creation = cInt(*config.max_depth_creation)
+		sub_pop            cInt
+		r                  cInt
+		min_depth          cInt
+	)
+
 	if !*config.zero_depth {
-		sub_pop = (*config.population_size - p.num_ind) / *config.max_depth_creation
-		r = (*config.population_size - p.num_ind) % *config.max_depth_creation
+		sub_pop = (population_size - p.num_ind) / max_depth_creation
+		r = (population_size - p.num_ind) % max_depth_creation
 		min_depth = 1
 	} else {
-		sub_pop = (*config.population_size - p.num_ind) / (*config.max_depth_creation + 1)
-		r = (*config.population_size - p.num_ind) % (*config.max_depth_creation + 1)
+		sub_pop = (population_size - p.num_ind) / (max_depth_creation + 1)
+		r = (population_size - p.num_ind) % (max_depth_creation + 1)
 		min_depth = 0
 	}
-	for j := *config.max_depth_creation; j >= min_depth; j-- {
-		if j < *config.max_depth_creation {
-			for k := 0; k < int(math.Ceil(float64(sub_pop)*0.5)); k++ {
+	for j := max_depth_creation; j >= min_depth; j-- {
+		if j < max_depth_creation {
+			for k := cInt(0); k < cInt(math.Ceil(float64(sub_pop)*0.5)); k++ {
 				node := create_full_tree(0, nil, j)
 				p.individuals[p.num_ind] = node
 				p.num_ind++
 			}
-			for k := 0; k < int(math.Floor(float64(sub_pop)*0.5)); k++ {
+			for k := cInt(0); k < cInt(math.Floor(float64(sub_pop)*0.5)); k++ {
 				node := create_grow_tree(0, nil, j)
 				p.individuals[p.num_ind] = node
 				p.num_ind++
 			}
 		} else {
-			for k := 0; k < int(math.Ceil(float64(sub_pop+r)*0.5)); k++ {
+			for k := cInt(0); k < cInt(math.Ceil(float64(sub_pop+r)*0.5)); k++ {
 				node := create_full_tree(0, nil, j)
 				p.individuals[p.num_ind] = node
 				p.num_ind++
 			}
-			for k := 0; k < int(math.Floor(float64(sub_pop+r)*0.5)); k++ {
+			for k := cInt(0); k < cInt(math.Floor(float64(sub_pop+r)*0.5)); k++ {
 				node := create_grow_tree(0, nil, j)
 				p.individuals[p.num_ind] = node
 				p.num_ind++
@@ -389,7 +403,7 @@ func NewPopulation(seeds ...string) *Population {
 	}
 	p := &Population{
 		individuals: make([]*Node, *config.population_size),
-		num_ind:     len(seeds),
+		num_ind:     cInt(len(seeds)),
 	}
 	for i := range seeds {
 		p.individuals[i] = read_sem(seeds[i])
@@ -398,7 +412,7 @@ func NewPopulation(seeds ...string) *Population {
 }
 
 // Fills the population using the method specified by the parameter
-func initialize_population(p *Population, method int) {
+func initialize_population(p *Population, method cInt) {
 	switch method {
 	case 0:
 		create_grow_pop(p)
@@ -410,7 +424,7 @@ func initialize_population(p *Population, method int) {
 }
 
 // Creates a random tree with depth in the range [0;max_depth] and returning its root Node
-func create_grow_tree(depth int, parent *Node, max_depth int) *Node {
+func create_grow_tree(depth cInt, parent *Node, max_depth cInt) *Node {
 	if depth == 0 && !*config.zero_depth {
 		sym := symbols[choose_function()]
 		el := &Node{
@@ -418,7 +432,7 @@ func create_grow_tree(depth int, parent *Node, max_depth int) *Node {
 			parent:   nil,
 			children: make([]*Node, sym.arity),
 		}
-		for i := 0; i < sym.arity; i++ {
+		for i := cInt(0); i < sym.arity; i++ {
 			el.children[i] = create_grow_tree(depth+1, el, max_depth)
 		}
 		return el
@@ -437,7 +451,7 @@ func create_grow_tree(depth int, parent *Node, max_depth int) *Node {
 			parent:   parent,
 			children: make([]*Node, sym.arity),
 		}
-		for i := 0; i < sym.arity; i++ {
+		for i := cInt(0); i < sym.arity; i++ {
 			el.children[i] = create_grow_tree(depth+1, el, max_depth)
 		}
 		return el
@@ -451,31 +465,31 @@ func create_grow_tree(depth int, parent *Node, max_depth int) *Node {
 	}
 }
 
-func create_grow_tree_arrays(depth, max_depth, base_index int) []int {
+func create_grow_tree_arrays(depth, max_depth cInt, base_index cInt) []cInt {
 	if depth == 0 && !*config.zero_depth {
 		// No zero-depth inviduals allowed: start with a functional
-		op := choose_function()                  // Get ID of the selected functional
-		tree := make([]int, symbols[op].arity+1) // Create space for ID and children pointers
-		tree[0] = op                             // Save functional ID in first location
+		op := choose_function()                   // Get ID of the selected functional
+		tree := make([]cInt, symbols[op].arity+1) // Create space for ID and children pointers
+		tree[0] = cInt(op)                        // Save functional ID in first location
 		// Create children trees
-		for c := 1; c <= symbols[op].arity; c++ {
-			tree[c] = len(tree) + base_index // Save child position in next location
+		for c := cInt(1); c <= symbols[op].arity; c++ {
+			tree[c] = cInt(len(tree)) + base_index // Save child position in next location
 			child := create_grow_tree_arrays(depth+1, max_depth, tree[c])
 			tree = append(tree, child...)
 		}
 		return tree
 	}
 	if depth == max_depth {
-		return []int{choose_terminal()}
+		return []cInt{cInt(choose_terminal())}
 	}
 	if rand.Intn(2) == 0 {
-		return []int{choose_terminal()}
+		return []cInt{cInt(choose_terminal())}
 	} else {
 		op := choose_function()
-		tree := make([]int, symbols[op].arity+1)
-		tree[0] = op
-		for c := 1; c <= symbols[op].arity; c++ {
-			tree[c] = len(tree) + base_index
+		tree := make([]cInt, symbols[op].arity+1)
+		tree[0] = cInt(op)
+		for c := cInt(1); c <= symbols[op].arity; c++ {
+			tree[c] = cInt(len(tree)) + base_index
 			child := create_grow_tree_arrays(depth+1, max_depth, tree[c])
 			tree = append(tree, child...)
 		}
@@ -484,7 +498,7 @@ func create_grow_tree_arrays(depth, max_depth, base_index int) []int {
 }
 
 // Creates a tree with depth equal to the ones specified by the parameter max_depth
-func create_full_tree(depth int, parent *Node, max_depth int) *Node {
+func create_full_tree(depth cInt, parent *Node, max_depth cInt) *Node {
 	if depth == 0 && depth < max_depth {
 		sym := symbols[choose_function()]
 		el := &Node{
@@ -492,7 +506,7 @@ func create_full_tree(depth int, parent *Node, max_depth int) *Node {
 			parent:   nil,
 			children: make([]*Node, sym.arity),
 		}
-		for i := 0; i < sym.arity; i++ {
+		for i := cInt(0); i < sym.arity; i++ {
 			el.children[i] = create_full_tree(depth+1, el, max_depth)
 		}
 		return el
@@ -510,7 +524,7 @@ func create_full_tree(depth int, parent *Node, max_depth int) *Node {
 		parent:   parent,
 		children: make([]*Node, sym.arity),
 	}
-	for i := 0; i < sym.arity; i++ {
+	for i := cInt(0); i < sym.arity; i++ {
 		el.children[i] = create_full_tree(depth+1, el, max_depth)
 	}
 	return el
@@ -520,7 +534,7 @@ func create_full_tree(depth int, parent *Node, max_depth int) *Node {
 func write_tree(el *Node) string {
 	if el.root.isFunc {
 		out := "(" + el.root.name + " "
-		for i := 0; i < el.root.arity-1; i++ {
+		for i := cInt(0); i < el.root.arity-1; i++ {
 			out += write_tree(el.children[i]) + " "
 		}
 		return out + write_tree(el.children[el.root.arity-1]) + ")"
@@ -536,7 +550,7 @@ func add_symbol(name string) *Symbol {
 		return nil // Not a float, must be a wrong variable or functional
 	}
 	// Conversion was successful, must be a constant
-	sym := &Symbol{false, -1, NUM_CONSTANT_SYMBOLS, name, val}
+	sym := &Symbol{false, -1, NUM_CONSTANT_SYMBOLS, name, cFloat64(val)}
 	symbols = append(symbols, sym)
 	// Increase symbol count
 	NUM_CONSTANT_SYMBOLS++
@@ -567,7 +581,7 @@ func read_sem(path string) *Node {
 }
 
 // Implements a protected division. If the denominator is equal to 0 the function returns 1 as a result of the division;
-func protected_division(num, den float64) float64 {
+func protected_division(num, den cFloat64) cFloat64 {
 	if den == 0 {
 		return 1
 	}
@@ -576,7 +590,7 @@ func protected_division(num, den float64) float64 {
 
 // This function retrieves the value of a terminal symbol given
 // the i-th instance as input.
-func terminal_value(i int, sym *Symbol) float64 {
+func terminal_value(i cInt, sym *Symbol) cFloat64 {
 	if sym.id >= NUM_FUNCTIONAL_SYMBOLS && sym.id < NUM_FUNCTIONAL_SYMBOLS+NUM_VARIABLE_SYMBOLS {
 		// Variables take their value from the input data
 		return set[i].vars[sym.id-NUM_FUNCTIONAL_SYMBOLS]
@@ -587,7 +601,7 @@ func terminal_value(i int, sym *Symbol) float64 {
 }
 
 // Evaluates evaluates a tree on the i-th input instance
-func eval(tree *Node, i int) float64 {
+func eval(tree *Node, i cInt) cFloat64 {
 	switch {
 	case tree.root == nil:
 		// If root is nil, this tree has been created by parse_sem
@@ -605,9 +619,9 @@ func eval(tree *Node, i int) float64 {
 		case "sqrt":
 			v := eval(tree.children[0], i)
 			if v < 0 {
-				return math.Sqrt(-v)
+				return cFloat64(math.Sqrt(float64(-v)))
 			} else {
-				return math.Sqrt(v)
+				return cFloat64(math.Sqrt(float64(v)))
 			}
 		//case "^":
 		//	return math.Pow(eval(tree.children[0], i), eval(tree.children[1], i))
@@ -619,7 +633,7 @@ func eval(tree *Node, i int) float64 {
 	}
 }
 
-func eval_arrays(tree []int, start, i int) float64 {
+func eval_arrays(tree []cInt, start cInt, i cInt) cFloat64 {
 	switch {
 	case symbols[tree[start]].name == "+":
 		return eval_arrays(tree, tree[start+1], i) + eval_arrays(tree, tree[start+2], i)
@@ -632,12 +646,12 @@ func eval_arrays(tree []int, start, i int) float64 {
 	case symbols[tree[start]].name == "sqrt":
 		v := eval_arrays(tree, tree[start+1], i)
 		if v < 0 {
-			return math.Sqrt(-v)
+			return cFloat64(math.Sqrt(float64(-v)))
 		} else {
-			return math.Sqrt(v)
+			return cFloat64(math.Sqrt(float64(v)))
 		}
 	default:
-		fmt.Println("Found terminal", symbols[tree[start]], "corresponding to value", tree[start], "at position", start)
+		//fmt.Println("Found terminal w/ ID", symbols[tree[start]].id, "at pos", start, terminal_value(i, symbols[tree[start]]), "i is", i)
 		return terminal_value(i, symbols[tree[start]]) // Root points to a terminal
 	}
 }
@@ -679,9 +693,9 @@ func eval_to_expr(tree *Node) string {
 func eval_to_kernel(tree *Node, name string) string {
 	return fmt.Sprintf(`extern "C" __global__
 void %s(double *out, double *set) {
-	int i = blockIdx.x * blockDim.x + threadIdx.x;
-	int len = %d;
-	int wide = %d;
+	cInt i = blockIdx.x * blockDim.x + threadIdx.x;
+	cInt len = %d;
+	cInt wide = %d;
 	if (i < len)
 		out[i] = %s;
 }
@@ -692,20 +706,20 @@ void %s(double *out, double *set) {
 // Evaluate is called once, after individuals have been initialized for the first time.
 // This function fills fit using semantic_evaluate
 func evaluate(p *Population) {
-	f, s := semantic_evaluate(p.individuals[0], nrow, 0)
+	f, s := semantic_evaluate(p.individuals[0], cInt(nrow), 0)
 	fit[0] = f
 	copy(sem_train_cases[0], s)
 
-	f, s = semantic_evaluate(p.individuals[0], nrow_test, nrow)
+	f, s = semantic_evaluate(p.individuals[0], cInt(nrow_test), cInt(nrow))
 	fit_test[0] = f
 	copy(sem_test_cases[0], s)
 
 	for i := 1; i < *config.population_size; i++ {
-		f, s = semantic_evaluate(p.individuals[i], nrow, 0)
+		f, s = semantic_evaluate(p.individuals[i], cInt(nrow), 0)
 		fit[i] = f
 		copy(sem_train_cases[i], s)
 
-		f, s = semantic_evaluate(p.individuals[i], nrow_test, nrow)
+		f, s = semantic_evaluate(p.individuals[i], cInt(nrow_test), cInt(nrow))
 		fit_test[i] = f
 		copy(sem_test_cases[i], s)
 	}
@@ -713,8 +727,8 @@ func evaluate(p *Population) {
 
 // Calculates the training fitness of an individual (representing as a tree).
 // This function will append to sem_train_cases the semantic of the evaluated node.
-func semantic_evaluate(el *Node, sem_size, sem_offs int) (float64, Semantic) {
-	var d float64
+func semantic_evaluate(el *Node, sem_size, sem_offs cInt) (cFloat64, Semantic) {
+	var d cFloat64
 	val := make(Semantic, sem_size)
 	if !*config.use_goroutines {
 		for i := sem_offs; i < sem_offs+sem_size; i++ {
@@ -724,12 +738,12 @@ func semantic_evaluate(el *Node, sem_size, sem_offs int) (float64, Semantic) {
 		}
 	} else {
 		// Communication channel
-		ch := make(chan float64)
+		ch := make(chan cFloat64)
 		// Create some workers to work on chunks of rows
-		nw := runtime.NumCPU()
-		for w := 0; w < nw; w++ {
-			go func(id int) {
-				var wd float64
+		nw := cInt(runtime.NumCPU())
+		for w := cInt(0); w < nw; w++ {
+			go func(id cInt) {
+				var wd cFloat64
 				// Each worker works on a separated share
 				for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
 					res := eval(el, i)
@@ -739,16 +753,16 @@ func semantic_evaluate(el *Node, sem_size, sem_offs int) (float64, Semantic) {
 				ch <- wd // Send partial results
 			}(w)
 		}
-		for w := 0; w < nw; w++ {
+		for w := cInt(0); w < nw; w++ {
 			d += <-ch
 		}
 	}
-	d = d / float64(nrow_test)
+	d = d / cFloat64(nrow_test)
 	return d, val
 }
 
 // Calculates the semantics (considering training instances) of a randomly generated tree. The tree is used to perform the semantic geometric crossover or the geometric semantic mutation
-func semantic_evaluate_random(el *Node, sem_size, sem_offs int) Semantic {
+func semantic_evaluate_random(el *Node, sem_size, sem_offs cInt) Semantic {
 	sem := make(Semantic, sem_size)
 	if !*config.use_goroutines {
 		for i := sem_offs; i < sem_offs+sem_size; i++ {
@@ -757,9 +771,9 @@ func semantic_evaluate_random(el *Node, sem_size, sem_offs int) Semantic {
 	} else {
 		sc := make(chan bool) // Sync channel
 		// Create some workers to work on chunks of rows
-		nw := runtime.NumCPU()
-		for w := 0; w < nw; w++ {
-			go func(id int) {
+		nw := cInt(runtime.NumCPU())
+		for w := cInt(0); w < nw; w++ {
+			go func(id cInt) {
 				// Each worker uses a partition of the dataset
 				for i := id + sem_offs; i < sem_offs+sem_size; i += nw {
 					sem[i-sem_offs] = eval(el, i)
@@ -767,7 +781,7 @@ func semantic_evaluate_random(el *Node, sem_size, sem_offs int) Semantic {
 				sc <- true
 			}(w)
 		}
-		for w := 0; w < nw; w++ {
+		for w := cInt(0); w < nw; w++ {
 			<-sc
 		}
 	}
@@ -778,9 +792,9 @@ func random_tree_semantics() (Semantic, Semantic) {
 	if !*config.use_cuda {
 		// Generate a random tree and compute its semantic (train and test)
 		now := time.Now()
-		rt := create_grow_tree(0, nil, *config.max_depth_creation)
-		sem_train := semantic_evaluate_random(rt, nrow, 0)
-		sem_test := semantic_evaluate_random(rt, nrow_test, nrow)
+		rt := create_grow_tree(0, nil, cInt(*config.max_depth_creation))
+		sem_train := semantic_evaluate_random(rt, cInt(nrow), 0)
+		sem_test := semantic_evaluate_random(rt, cInt(nrow_test), cInt(nrow))
 		tot_time := time.Since(now)
 		fmt.Println("Time to generate and evaluate a tree:", tot_time)
 		return sem_train, sem_test
@@ -793,7 +807,7 @@ func random_tree_semantics() (Semantic, Semantic) {
 }
 
 // Implements a tournament selection procedure
-func tournament_selection() int {
+func tournament_selection() cInt {
 	// Select first participant
 	best_index := rand.Intn(*config.population_size)
 	// Pick best individual
@@ -803,12 +817,12 @@ func tournament_selection() int {
 			best_index = next
 		}
 	}
-	return best_index
+	return cInt(best_index)
 }
 
 // Copies an individual of the population at generation g-1 to the current population (generation g)
 // Any individual (any position) can be selected to be copied in position i
-func reproduction(i int) {
+func reproduction(i cInt) {
 	old_i := i
 	// Elitism: if i is the best individual, reproduce it
 	if i != index_best {
@@ -824,7 +838,7 @@ func reproduction(i int) {
 }
 
 // Performs a geometric semantic crossover
-func geometric_semantic_crossover(i int) {
+func geometric_semantic_crossover(i cInt) {
 	if i != index_best {
 		// Replace the individual with the crossover of two parents
 		p1 := tournament_selection()
@@ -833,16 +847,16 @@ func geometric_semantic_crossover(i int) {
 		sem_rt, sem_rt_test := random_tree_semantics()
 		// Compute the geometric semantic (train)
 		for j := 0; j < nrow; j++ {
-			sigmoid := 1 / (1 + math.Exp(-sem_rt[j]))
+			sigmoid := 1 / (1 + exp64(-sem_rt[j]))
 			sem_train_cases_new[i][j] = sem_train_cases[p1][j]*sigmoid + sem_train_cases[p2][j]*(1-sigmoid)
 		}
-		fit_new[i] = fitness_of_semantic(sem_train_cases_new[i], nrow, 0)
+		fit_new[i] = fitness_of_semantic(sem_train_cases_new[i], cInt(nrow), 0)
 		// Compute the geometric semantic (test)
 		for j := 0; j < nrow_test; j++ {
-			sigmoid := 1 / (1 + math.Exp(-sem_rt_test[j]))
+			sigmoid := 1 / (1 + exp64(-sem_rt_test[j]))
 			sem_test_cases_new[i][j] = sem_test_cases[p1][j]*sigmoid + sem_test_cases[p2][j]*(1-sigmoid)
 		}
-		fit_test_new[i] = fitness_of_semantic(sem_test_cases_new[i], nrow_test, nrow)
+		fit_test_new[i] = fitness_of_semantic(sem_test_cases_new[i], cInt(nrow_test), cInt(nrow))
 	} else {
 		// The best individual will not be changed
 		copy(sem_train_cases_new[i], sem_train_cases[i])
@@ -853,26 +867,26 @@ func geometric_semantic_crossover(i int) {
 }
 
 // Performs a geometric semantic mutation
-func geometric_semantic_mutation(i int) {
+func geometric_semantic_mutation(i cInt) {
 	if i != index_best {
 		// Replace the individual with a mutated version
 		sem_rt1, sem_rt1_test := random_tree_semantics()
 		sem_rt2, sem_rt2_test := random_tree_semantics()
 
-		mut_step := rand.Float64()
+		mut_step := cFloat64(rand.Float64())
 
 		for j := 0; j < nrow; j++ {
-			sigmoid1 := 1 / (1 + math.Exp(-sem_rt1[j]))
-			sigmoid2 := 1 / (1 + math.Exp(-sem_rt2[j]))
+			sigmoid1 := 1 / (1 + exp64(-sem_rt1[j]))
+			sigmoid2 := 1 / (1 + exp64(-sem_rt2[j]))
 			sem_train_cases_new[i][j] += mut_step * (sigmoid1 - sigmoid2)
 		}
-		fit_new[i] = fitness_of_semantic(sem_train_cases_new[i], nrow, 0)
+		fit_new[i] = fitness_of_semantic(sem_train_cases_new[i], cInt(nrow), 0)
 		for j := 0; j < nrow_test; j++ {
-			sigmoid1 := 1 / (1 + math.Exp(-sem_rt1_test[j]))
-			sigmoid2 := 1 / (1 + math.Exp(-sem_rt2_test[j]))
+			sigmoid1 := 1 / (1 + exp64(-sem_rt1_test[j]))
+			sigmoid2 := 1 / (1 + exp64(-sem_rt2_test[j]))
 			sem_test_cases_new[i][j] += mut_step * (sigmoid1 - sigmoid2)
 		}
-		fit_test_new[i] = fitness_of_semantic(sem_test_cases_new[i], nrow_test, nrow)
+		fit_test_new[i] = fitness_of_semantic(sem_test_cases_new[i], cInt(nrow_test), cInt(nrow))
 	}
 	// Mutation happens after reproduction: elite are reproduced but are not mutated
 }
@@ -880,20 +894,20 @@ func geometric_semantic_mutation(i int) {
 // Given a semantic, compute the fitness of a subset of that semantic as the
 // Mean Squared Difference between the semantic and the dataset.
 // Only sem_size elements, starting from sem_offs, will be considered in the computation
-func fitness_of_semantic(sem Semantic, sem_size, sem_offs int) float64 {
-	var d float64
+func fitness_of_semantic(sem Semantic, sem_size, sem_offs cInt) cFloat64 {
+	var d cFloat64
 	for j := sem_offs; j < sem_offs+sem_size; j++ {
 		d += square_diff(sem[j-sem_offs], set[j].y_value)
 	}
-	return d / float64(sem_size)
+	return d / cFloat64(sem_size)
 }
 
 // Finds the best individual in the population
-func best_individual() int {
-	var best_index int
+func best_individual() cInt {
+	var best_index cInt
 	for i := 1; i < len(fit); i++ {
 		if better(fit[i], fit[best_index]) {
-			best_index = i
+			best_index = cInt(i)
 		}
 	}
 	return best_index
@@ -914,7 +928,7 @@ func next_token(in *bufio.Scanner) string {
 }
 
 // Compares the fitness of two solutions.
-func better(f1, f2 float64) bool {
+func better(f1, f2 cFloat64) bool {
 	if *config.minimization_problem {
 		return f1 < f2
 	} else {
@@ -923,10 +937,10 @@ func better(f1, f2 float64) bool {
 }
 
 // Calculates the number of nodes of a solution.
-func node_count(el *Node) int {
-	counter := 1
+func node_count(el *Node) cInt {
+	var counter cInt = 1
 	if el.children != nil {
-		for i := 0; i < el.root.arity; i++ {
+		for i := cInt(0); i < el.root.arity; i++ {
 			counter += node_count(el.children[i])
 		}
 	}
@@ -942,12 +956,19 @@ func create_or_panic(path string) *os.File {
 	return f
 }
 
+func mapReplace(target string, repl map[string]interface{}) string {
+	for k := range repl {
+		target = strings.Replace(target, k, fmt.Sprint(repl[k]), -1)
+	}
+	return target
+}
+
 // Allocate memory for fitness and semantic value for each individual
 func init_tables() {
-	fit = make([]float64, *config.population_size)
-	fit_test = make([]float64, *config.population_size)
-	fit_new = make([]float64, *config.population_size)
-	fit_test_new = make([]float64, *config.population_size)
+	fit = make([]cFloat64, *config.population_size)
+	fit_test = make([]cFloat64, *config.population_size)
+	fit_new = make([]cFloat64, *config.population_size)
+	fit_test_new = make([]cFloat64, *config.population_size)
 	sem_train_cases = make([]Semantic, *config.population_size)
 	sem_train_cases_new = make([]Semantic, *config.population_size)
 	sem_test_cases = make([]Semantic, *config.population_size)
@@ -960,10 +981,10 @@ func init_tables() {
 	}
 }
 
-type Arities []int
+type Arities []cInt
 
 func (a Arities) String() string {
-	return fmt.Sprintf("[%d] = {%v}", len(a), strings.Trim(strings.Replace(fmt.Sprint(([]int)(a)), " ", ", ", -1), "[]"))
+	return fmt.Sprintf("[%d] = {%v}", len(a), strings.Trim(strings.Replace(fmt.Sprint(([]cInt)(a)), " ", ", ", -1), "[]"))
 }
 
 // TODO alternative approach: instead of generating source codes and compiling them
@@ -999,140 +1020,98 @@ func cuda_tree_generator() {
 	ctx.Synchronize()
 	fmt.Println("CUDA initialized successfully")
 
+	// Prepare grid dimensions
+	tpb := 256 // TODO Get this from attr
+	bpg := (nrow + nrow_test + tpb - 1) / tpb
+
+	fmt.Println("CUDA Threads Per Block", tpb)
+	fmt.Println("CUDA Blocks Per Grid", bpg)
+
 	// Allocate memory for GPU computation
 	var (
 		len_ds   = C.size_t(nrow + nrow_test)
 		num_vars = C.size_t(nvar + 1)
-		cpu_out  = make([]float64, nrow+nrow_test)
-		cpu_set  = make([]float64, (nrow+nrow_test)*(nvar+1))
+		cpu_out  = make([]cFloat64, nrow+nrow_test)
+		cpu_set  = make([]cFloat64, (nrow+nrow_test)*(nvar+1))
 		gpu_out  = cuda.NewBuffer(int(C.sizeof_double * len_ds))
 		gpu_set  = cuda.NewBuffer(int(C.sizeof_double * len_ds * num_vars))
 	)
-	// Copy datasets
+	// Copy datasets, including target which is used to compute fitness
 	for i := 0; i < nrow+nrow_test; i++ {
 		for j := 0; j < nvar; j++ {
-			cpu_set[i*(nvar+1)+j] = set[i].vars[j] //C.double(set[i].vars[j])
+			cpu_set[i*(nvar+1)+j] = cFloat64(set[i].vars[j]) //C.double(set[i].vars[j])
 		}
-		cpu_set[i*(nvar+1)+nvar] = set[i].y_value //C.double(set[i].y_value)
+		cpu_set[i*(nvar+1)+nvar] = cFloat64(set[i].y_value) //C.double(set[i].y_value)
 	}
 	// Transfer to GPU
 	gpu_set.FromHost(unsafe.Pointer(&cpu_set[0]))
 
 	// Copy symbol table to GPU
 	var (
-		cpu_sym_val = make([]float64, len(symbols))
+		cpu_sym_val = make([]cFloat64, len(symbols))
 		gpu_sym_val = cuda.NewBuffer(C.sizeof_double * len(symbols))
 
 		// I/O buffers
-		gpu_in_id     = cuda.NewBuffer(C.sizeof_int)
-		gpu_out_type  = cuda.NewBuffer(C.sizeof_int)
-		gpu_out_arity = cuda.NewBuffer(C.sizeof_int)
-		gpu_out_name  = cuda.NewBuffer(C.sizeof_int)
-		gpu_out_val   = cuda.NewBuffer(C.sizeof_double)
+		gpu_in_id = cuda.NewBuffer(C.sizeof_int)
+		//gpu_out_type  = cuda.NewBuffer(C.sizeof_int)
+		//gpu_out_arity = cuda.NewBuffer(C.sizeof_int)
+		//gpu_out_name  = cuda.NewBuffer(C.sizeof_int)
+		//gpu_out_val   = cuda.NewBuffer(C.sizeof_double)
 
 		// Eval of array
 		gpu_tree_arr = cuda.NewBuffer(C.sizeof_int * 1000) // Make this large enough for any generated tree TODO compute this value
 
-		gpu_out_average = cuda.NewBuffer(C.sizeof_double)
+		gpu_out_evals = cuda.NewBuffer(C.sizeof_double * (nrow + nrow_test))
+
+		gpu_out_reduce = cuda.NewBuffer(C.sizeof_double * bpg)
 	)
-	// Copy symbols value
+	// Copy symbols value // FIXME controllare da dove si inizia perché le variabili non mi sembrano giuste
 	for i := range symbols {
 		if !symbols[i].isFunc {
-			cpu_sym_val[i] = symbols[i].value
+			cpu_sym_val[i] = cFloat64(symbols[i].value)
+		} else {
+			cpu_sym_val[i] = -1
 		}
 	}
 	gpu_sym_val.FromHost(unsafe.Pointer(&cpu_sym_val[0]))
 
-	tttkkk := fmt.Sprintf(`extern "C" __global__
-void get_symbol(double *sym, double *set, int *id, int *out_type, int *out_arity, int *out_name, double *out_val) {
-	int i = blockIdx.x * blockDim.x + threadIdx.x;
-
-	// Order of appearance in the symbols table
-	const int NUM_FUNCTIONAL_SYMBOLS = %d;
-	const int NUM_VARIABLE_SYMBOLS = %d;
-	const int NUM_CONSTANT_SYMBOLS = %d;
-	const int NROWS = %d;
-	// These are hard-coded as in create_T_F()
-	// FIXME these can be removed if operator IDs are fixed
-	const int arities[5] = {2, 2, 2, 2, 1};
-	const int names[5] = {'+', '-', '*', '/', 's'};
-
-	if (i != 0)
-		return;
-
-	*out_name = *id;
-	*out_val = 3.14159265;
-	if (*id < NUM_FUNCTIONAL_SYMBOLS) {
-		*out_type = 1; // Functional
-		*out_arity = arities[*id];
-		*out_name = names[*id];
-		switch (names[*id]) { // FIXME can be changed into a simple integer
-		case '+': *out_val = 1111; break;
-		case '-': *out_val = 2222; break;
-		case '*': *out_val = 3333; break;
-		case '/': *out_val = 4444; break;
-		case 's': *out_val = 5555; break;
-		}
-	}
-	if (*id >= NUM_FUNCTIONAL_SYMBOLS && *id < NUM_FUNCTIONAL_SYMBOLS+NUM_VARIABLE_SYMBOLS) {
-		*out_type = 2; // Variable
-		*out_arity = *id - NUM_FUNCTIONAL_SYMBOLS;
-		*out_name = 0;
-		*out_val = set[i * NROWS + (*id - NUM_FUNCTIONAL_SYMBOLS)];
-	}
-	if (*id >= NUM_FUNCTIONAL_SYMBOLS+NUM_VARIABLE_SYMBOLS) {
-		*out_type = 3; // Constant
-		*out_arity = -1;
-		*out_name = 0;
-		*out_val = sym[*id];
-	}
+	blahblah := mapReplace(`
+extern "C" __device__
+double get_var(double *set, int var, int row) {
+	return set[row * (NUM_VARIABLE_SYMBOLS + 1) + var];
 }
-`, NUM_FUNCTIONAL_SYMBOLS, NUM_VARIABLE_SYMBOLS, NUM_CONSTANT_SYMBOLS, int(len_ds))
 
-	blahblah := fmt.Sprintf(`extern "C" __device__
-double eval_arrays(double *sym, double *set, int *tree, int start) {
-	return sym[tree[start + 1]];
-
-	int i = blockIdx.x * blockDim.x + threadIdx.x;
-
-	// Order of appearance in the symbols table
-	const int NUM_FUNCTIONAL_SYMBOLS = %d;
-	const int NUM_VARIABLE_SYMBOLS = %d;
-	const int NUM_CONSTANT_SYMBOLS = %d;
-	const int NROWS = %d;
-
-	// These are hard-coded as in create_T_F()
-	// FIXME this can be removed if operator IDs are fixed
-	const int names[5] = {'+', '-', '*', '/', 's'};
-
+extern "C" __device__
+double eval_arrays(double *sym, double *set, int *tree, int start, int i) {
 	int id = tree[start];
 	if (id < NUM_FUNCTIONAL_SYMBOLS) {
-		switch (names[id]) {
-			case '+': {
-				double v1 = eval_arrays(sym, set, tree, tree[start+1]);
-				double v2 = eval_arrays(sym, set, tree, tree[start+1]);
+		switch (id) {
+		// These IDs are hard-coded as in create_T_F()
+			case 0: {
+				double v1 = eval_arrays(sym, set, tree, tree[start+1], i);
+				double v2 = eval_arrays(sym, set, tree, tree[start+2], i);
 				return v1 + v2;
 			}
-			case '-': {
-				double v1 = eval_arrays(sym, set, tree, tree[start+1]);
-				double v2 = eval_arrays(sym, set, tree, tree[start+1]);
+			case 1: {
+				double v1 = eval_arrays(sym, set, tree, tree[start+1], i);
+				double v2 = eval_arrays(sym, set, tree, tree[start+2], i);
 				return v1 - v2;
 			}
-			case '*': {
-				double v1 = eval_arrays(sym, set, tree, tree[start+1]);
-				double v2 = eval_arrays(sym, set, tree, tree[start+1]);
+			case 2: {
+				double v1 = eval_arrays(sym, set, tree, tree[start+1], i);
+				double v2 = eval_arrays(sym, set, tree, tree[start+2], i);
 				return v1 * v2;
 			}
-			case '/': {
-				double v1 = eval_arrays(sym, set, tree, tree[start+1]);
-				double v2 = eval_arrays(sym, set, tree, tree[start+1]);
+			case 3: {
+				double v1 = eval_arrays(sym, set, tree, tree[start+1], i);
+				double v2 = eval_arrays(sym, set, tree, tree[start+2], i);
 				if (v2 == 0)
 					return 1;
 				else
 					return v1 / v2;
 			}
 			default: {
-				double v = eval_arrays(sym, set, tree, tree[start+1]);
+				double v = eval_arrays(sym, set, tree, tree[start+1], i);
 				if (v < 0)
 					return sqrt(-v);
 				else
@@ -1141,7 +1120,7 @@ double eval_arrays(double *sym, double *set, int *tree, int start) {
 		}
 	}
 	if (id >= NUM_FUNCTIONAL_SYMBOLS && id < NUM_FUNCTIONAL_SYMBOLS + NUM_VARIABLE_SYMBOLS) {
-		return set[i * NROWS + id - NUM_FUNCTIONAL_SYMBOLS];
+		return get_var(set, id - NUM_FUNCTIONAL_SYMBOLS, i);
 	}
 	if (id >= NUM_FUNCTIONAL_SYMBOLS+NUM_VARIABLE_SYMBOLS) {
 		return sym[id];
@@ -1149,16 +1128,45 @@ double eval_arrays(double *sym, double *set, int *tree, int start) {
 }
 
 extern "C" __global__
-void semantic_eval_arrays(double *sym, double *set, int *tree, double *average) {
-	//__shared__ double sh[123];
-	double res = eval_arrays(sym, set, tree, 0);
-	*average = res;
-}
-`, NUM_FUNCTIONAL_SYMBOLS, NUM_VARIABLE_SYMBOLS, NUM_CONSTANT_SYMBOLS, int(len_ds))
+void reduce(double *in_data, double *out_data) {
+	__shared__ double shm[NUM_THREADS];              // Shared memory where to accumulate data
+	int tib = threadIdx.x;                           // ID of thread in its block
+	int tig = blockIdx.x * blockDim.x + threadIdx.x; // ID of thread globally
 
-	// Prepare kernel launch
-	tpb := 256 // TODO Get this from attr
-	bpg := (nrow + nrow_test + tpb - 1) / tpb
+	// Compute how many data are to be processed in this block
+	int valids = NUM_THREADS;
+	if ((blockIdx.x + 1) * NUM_THREADS > NROWS)
+		valids = NROWS - blockIdx.x * NUM_THREADS;
+	if (tig >= NROWS)
+		return;                                      // Discard threads in excess
+	shm[tib] = in_data[tig];                         // Copy in shared memory the data of this thread
+	__syncthreads();                                 // Make sure all threads finished copying
+	// Reduce by varying sum stride
+	for (int stride = 1; stride < blockDim.x; stride *= 2) {
+		if (tib % (2*stride) == 0 && tib+stride < valids) {
+			shm[tib] += shm[tib + stride];            // Accumulate next element based on stride
+		}
+		__syncthreads(); // Ensure all threads computed
+	}
+	// First thread of every block saves the result
+	if (tib == 0)
+		out_data[blockIdx.x] = shm[0];
+}
+
+extern "C" __global__
+void semantic_eval_arrays(double *sym, double *set, int *tree, double *outs) {
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	if (i < NROWS) {
+		outs[i] = eval_arrays(sym, set, tree, 0, i);
+	}
+}
+`, map[string]interface{}{
+		"NUM_FUNCTIONAL_SYMBOLS": NUM_FUNCTIONAL_SYMBOLS,
+		"NUM_VARIABLE_SYMBOLS":   NUM_VARIABLE_SYMBOLS,
+		"NUM_CONSTANT_SYMBOLS":   NUM_CONSTANT_SYMBOLS,
+		"NROWS":                  nrow + nrow_test,
+		"NUM_THREADS":            tpb,
+	})
 
 	setup_time := time.Since(now)
 	fmt.Println("CUDA Setup time:", setup_time)
@@ -1170,32 +1178,38 @@ void semantic_eval_arrays(double *sym, double *set, int *tree, double *average) 
 
 	now = time.Now()
 	// Create a tree and convert it to a kernel function
-	test_tree := create_grow_tree(0, nil, *config.max_depth_creation)
+	test_tree := create_grow_tree(0, nil, cInt(*config.max_depth_creation))
 	test_src := eval_to_kernel(test_tree, "kernel_test")
 	create_time = time.Since(now)
 	create_count++
 
 	// Test arrays
 	if true {
-		tttkkk = tttkkk
-
-		fmt.Println("Kernel being used:\n", blahblah)
-
-		/*
-			prog := cuda.CreateProgram(cuda.Source{tttkkk, "get_symbol"}, nil)
-			prog.Compile(nil)
-			mod.LoadData(prog)
-			kern := mod.GetFunction("get_symbol")
-		*/
+		//fmt.Println("Kernel being used:\n", blahblah)
 
 		prog := cuda.CreateProgram(cuda.Source{blahblah, "semantic_eval_arrays"}, nil)
 		prog.Compile(nil)
 		mod.LoadData(prog)
-		kern := mod.GetFunction("semantic_eval_arrays")
+		cuda_sem_eval := mod.GetFunction("semantic_eval_arrays")
+		cuda_reduce := mod.GetFunction("reduce")
 
+		// Create tree
+		cpu_tree_arr := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
+		//cpu_tree_arr := []cInt{5} // First variable x0
+		//cpu_tree_arr := []cInt{6} // Second variable x1
+		//cpu_tree_arr := []cInt{8} // Last variable
+		//cpu_tree_arr := []cInt{9} // First constant
+		//cpu_tree_arr := []cInt{12} // Last constant
+		//cpu_tree_arr := []cInt{4, 2, 5} // Sqrt of first variable
+		//cpu_tree_arr := []cInt{4, 2, 9} // Sqrt of first constant
+		//cpu_tree_arr := []cInt{0, 3, 4, 5, 6} // Sum of first two variables
+		//cpu_tree_arr := []cInt{9} // First constant
+		//cpu_tree_arr := []cInt{9} // First constant
+
+		//cpu_tree_arr := []cInt{0, 3, 4, 5, 6} // Sum of two Variables
 		// Get random symbol
-		symid := rand.Intn(len(symbols))
-		gpu_in_id.FromInt(symid)
+		symid := cInt(cpu_tree_arr[0]) //rand.Intn(len(symbols))
+		gpu_in_id.FromInt32(int32(symid))
 
 		fmt.Println("++++ Selected random symbol", symid)
 		fmt.Println("   isFunc: ", symbols[symid].isFunc)
@@ -1206,42 +1220,72 @@ void semantic_eval_arrays(double *sym, double *set, int *tree, double *average) 
 
 		fmt.Println("")
 
-		cpu_tree_arr := create_grow_tree_arrays(0, *config.max_depth_creation, 0)
 		fmt.Println("Created tree", cpu_tree_arr)
 		// Transfer only the required elements in the buffer
-		gpu_tree_arr.FromHostN(unsafe.Pointer(&cpu_tree_arr[0]), int(C.sizeof_int)*len(cpu_tree_arr))
+		println("Copying bytes:", cInt(C.sizeof_int), len(cpu_tree_arr))
+
+		gpu_tree_arr.FromHostN(unsafe.Pointer(&cpu_tree_arr[0]), C.sizeof_int*len(cpu_tree_arr))
 		//kern.Launch1D(bpg, tpb, 0, gpu_sym_val, gpu_set, gpu_in_id, gpu_out_type, gpu_out_arity, gpu_out_name, gpu_out_val)
 
-		kern.Launch1D(bpg, tpb, 0, gpu_sym_val, gpu_set, gpu_tree_arr, gpu_out_average)
+		cuda_sem_eval.Launch1D(bpg, tpb, 0, gpu_sym_val, gpu_set, gpu_tree_arr, gpu_out_evals)
+		cuda_reduce.Launch1D(bpg, tpb, 0, gpu_out_evals, gpu_out_reduce)
 
 		ctx.Synchronize()
 
-		fmt.Println("Output from kernel:", gpu_out_average.ToDouble())
-
-		var (
-			out_type  = gpu_out_type.ToInt()
-			out_arity = gpu_out_arity.ToInt()
-			out_name  = gpu_out_name.ToInt()
-			out_val   = gpu_out_val.ToDouble()
-		)
-
-		types := []string{"functional", "variable", "constant"}
-
-		fmt.Println("RESULTS")
-		fmt.Println("    Type :", out_type, types[out_type-1])
-		fmt.Println("    Arity:", out_arity)
-		fmt.Println("    Name :", out_name)
-		fmt.Println("    Value:", out_val)
-
-		if symbols[symid].isFunc && out_type != 1 {
-			fmt.Println("  ERROR: CUDA is not reporting symbol as a functional")
+		fmt.Println("Sets on CPU:")
+		if false {
+			for i := 0; i < 10; i++ {
+				fmt.Println(cpu_set[i])
+			}
 		}
-		if symbols[symid].isFunc && symbols[symid].arity != out_arity {
-			fmt.Println("  ERROR: CUDA arity is different from true arity")
+		/*
+			var (
+				out_type  = gpu_out_type.ToInt32()
+				out_arity = gpu_out_arity.ToInt32()
+				out_name  = gpu_out_name.ToInt32()
+				out_val   = gpu_out_val.ToFloat64()
+			)
+		*/
+
+		out_evals := make([]cFloat64, nrow+nrow_test)
+		gpu_out_evals.FromDevice(unsafe.Pointer(&out_evals[0]))
+
+		var cpu_sum cFloat64
+		fmt.Println("Evaluations from GPU")
+		for i := range out_evals {
+			evv := eval_arrays(cpu_tree_arr, 0, cInt(i))
+			//fmt.Println("GPU", out_evals[i], "CPU", evv)
+			cpu_sum += evv
 		}
-		if symid >= NUM_FUNCTIONAL_SYMBOLS && symid < NUM_FUNCTIONAL_SYMBOLS+NUM_VARIABLE_SYMBOLS && out_type != 2 {
-			fmt.Println("  ERROR: CUDA is reporting a different type instead of variable")
+
+		out_red := make([]cFloat64, bpg)
+		gpu_out_reduce.FromDevice(unsafe.Pointer(&out_red[0]))
+		var gpu_tot cFloat64
+		for ii := range out_red {
+			fmt.Println("Blocco", ii, "risultato", out_red[ii])
+			gpu_tot += out_red[ii]
 		}
+		fmt.Println("Reduced sum GPU", gpu_tot, "CPU", cpu_sum)
+
+		/*
+			types := []string{"functional", "variable", "constant"}
+
+			fmt.Println("RESULTS")
+			fmt.Println("    Type :", out_type, types[out_type-1])
+			fmt.Println("    Arity:", out_arity)
+			fmt.Println("    Name :", out_name)
+			fmt.Println("    Value:", out_val)
+
+			if symbols[symid].isFunc && out_type != 1 {
+				fmt.Println("  ERROR: CUDA is not reporting symbol as a functional")
+			}
+			if symbols[symid].isFunc && symbols[symid].arity != cInt(out_arity) {
+				fmt.Println("  ERROR: CUDA arity is different from true arity")
+			}
+			if symid >= NUM_FUNCTIONAL_SYMBOLS && symid < NUM_FUNCTIONAL_SYMBOLS+NUM_VARIABLE_SYMBOLS && out_type != 2 {
+				fmt.Println("  ERROR: CUDA is reporting a different type instead of variable")
+			}
+		*/
 		/*
 				// Variables take their value from the input data
 				return set[i].vars[sym.id-NUM_FUNCTIONAL_SYMBOLS]
@@ -1251,7 +1295,7 @@ void semantic_eval_arrays(double *sym, double *set, int *tree, double *average) 
 			}
 		*/
 
-		t := create_grow_tree_arrays(0, *config.max_depth_creation, 0)
+		t := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
 		fmt.Println(t)
 		fmt.Println(eval_arrays(t, 0, 0))
 
@@ -1275,13 +1319,13 @@ void semantic_eval_arrays(double *sym, double *set, int *tree, double *average) 
 		now = time.Now()
 		kernel.Launch1D(bpg, tpb, 0, gpu_out, gpu_set)
 		// Copy back the results
-		cpu_out = make(Semantic, nrow+nrow_test)
+		cpu_out = make([]cFloat64, nrow+nrow_test)
 		gpu_out.FromDevice(unsafe.Pointer(&cpu_out[0]))
 		running_time += time.Since(now)
 		running_count++
 		// Create next tree while kernel is executing
 		now = time.Now()
-		test_tree = create_grow_tree(0, nil, *config.max_depth_creation)
+		test_tree = create_grow_tree(0, nil, cInt(*config.max_depth_creation))
 		test_src = eval_to_kernel(test_tree, "kernel_test")
 		create_time += time.Since(now) // Accumulate timing for kernel building
 		create_count++
@@ -1290,7 +1334,7 @@ void semantic_eval_arrays(double *sym, double *set, int *tree, double *average) 
 			// Convert to semantics
 			sem := make(Semantic, nrow+nrow_test)
 			for i := 0; i < nrow+nrow_test; i++ {
-				sem[i] = float64(cpu_out[i])
+				sem[i] = cFloat64(cpu_out[i])
 			}
 			// Enqueue this results
 			semchan <- sem
@@ -1307,7 +1351,7 @@ func main() {
 	// Parse CLI arguments: if they are set, they will override defaults and config file
 	flag.Parse()
 	// After config is read and flags are parsed
-	NUM_CONSTANT_SYMBOLS = *config.num_random_constants
+	NUM_CONSTANT_SYMBOLS = cInt(*config.num_random_constants)
 
 	if *config.path_in == "" {
 		fmt.Println("Please specify the train dataset using the train_file option")
@@ -1369,7 +1413,7 @@ func main() {
 
 	// Test arrays
 	if true {
-		t := create_grow_tree_arrays(0, *config.max_depth_creation, 0)
+		t := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
 		fmt.Println(t)
 		fmt.Println(eval_arrays(t, 0, 0))
 		os.Exit(0)
@@ -1379,7 +1423,7 @@ func main() {
 	p := NewPopulation(sem_seed...)
 	// Prepare tables (memory allocation)
 	init_tables()
-	initialize_population(p, *config.init_type)
+	initialize_population(p, cInt(*config.init_type))
 	// Evaluate each individual in the population, filling fitnesses and finding best individual
 	evaluate(p)
 	index_best = best_individual()
@@ -1398,12 +1442,12 @@ func main() {
 			rand_num := rand.Float64()
 			switch {
 			case rand_num < *config.p_crossover:
-				geometric_semantic_crossover(k)
+				geometric_semantic_crossover(cInt(k))
 			case rand_num < *config.p_crossover+*config.p_mutation:
-				reproduction(k)
-				geometric_semantic_mutation(k)
+				reproduction(cInt(k))
+				geometric_semantic_mutation(cInt(k))
 			default:
-				reproduction(k)
+				reproduction(cInt(k))
 			}
 		}
 
