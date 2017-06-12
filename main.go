@@ -30,6 +30,7 @@ import (
 	"flag"
 	"fmt"
 	cuda "github.com/akiross/go-cudart"
+	"io/ioutil"
 	"math"
 	"math/rand"
 	"os"
@@ -956,7 +957,12 @@ func create_or_panic(path string) *os.File {
 	return f
 }
 
-func mapReplace(target string, repl map[string]interface{}) string {
+func load_file_and_replace(path string, repl map[string]interface{}) string {
+	cont, err := ioutil.ReadFile(path)
+	if err != nil {
+		panic(err)
+	}
+	target := string(cont)
 	for k := range repl {
 		target = strings.Replace(target, k, fmt.Sprint(repl[k]), -1)
 	}
@@ -1021,7 +1027,7 @@ func cuda_tree_generator() {
 	fmt.Println("CUDA initialized successfully")
 
 	// Prepare grid dimensions
-	tpb := 256 // TODO Get this from attr
+	tpb := 32 //256 // TODO Get this from attr. Currently set to value near warp size
 	bpg := (nrow + nrow_test + tpb - 1) / tpb
 
 	fmt.Println("CUDA Threads Per Block", tpb)
@@ -1051,17 +1057,13 @@ func cuda_tree_generator() {
 		cpu_sym_val = make([]cFloat64, len(symbols))
 		gpu_sym_val = cuda.NewBuffer(C.sizeof_double * len(symbols))
 
-		// I/O buffers
-		gpu_in_id = cuda.NewBuffer(C.sizeof_int)
-		//gpu_out_type  = cuda.NewBuffer(C.sizeof_int)
-		//gpu_out_arity = cuda.NewBuffer(C.sizeof_int)
-		//gpu_out_name  = cuda.NewBuffer(C.sizeof_int)
-		//gpu_out_val   = cuda.NewBuffer(C.sizeof_double)
-
 		// Eval of array
 		gpu_tree_arr = cuda.NewBuffer(C.sizeof_int * 1000) // Make this large enough for any generated tree TODO compute this value
 
-		gpu_out_evals = cuda.NewBuffer(C.sizeof_double * (nrow + nrow_test))
+		// Create array for output values
+		// Make it aligned to number of threads to make GPU computation more efficient
+		num_evals     = tpb * int(math.Ceil(float64(nrow+nrow_test)/float64(tpb)))
+		gpu_out_evals = cuda.NewBuffer(C.sizeof_double * num_evals)
 
 		gpu_out_reduce = cuda.NewBuffer(C.sizeof_double * bpg)
 	)
@@ -1075,92 +1077,7 @@ func cuda_tree_generator() {
 	}
 	gpu_sym_val.FromHost(unsafe.Pointer(&cpu_sym_val[0]))
 
-	blahblah := mapReplace(`
-extern "C" __device__
-double get_var(double *set, int var, int row) {
-	return set[row * (NUM_VARIABLE_SYMBOLS + 1) + var];
-}
-
-extern "C" __device__
-double eval_arrays(double *sym, double *set, int *tree, int start, int i) {
-	int id = tree[start];
-	if (id < NUM_FUNCTIONAL_SYMBOLS) {
-		switch (id) {
-		// These IDs are hard-coded as in create_T_F()
-			case 0: {
-				double v1 = eval_arrays(sym, set, tree, tree[start+1], i);
-				double v2 = eval_arrays(sym, set, tree, tree[start+2], i);
-				return v1 + v2;
-			}
-			case 1: {
-				double v1 = eval_arrays(sym, set, tree, tree[start+1], i);
-				double v2 = eval_arrays(sym, set, tree, tree[start+2], i);
-				return v1 - v2;
-			}
-			case 2: {
-				double v1 = eval_arrays(sym, set, tree, tree[start+1], i);
-				double v2 = eval_arrays(sym, set, tree, tree[start+2], i);
-				return v1 * v2;
-			}
-			case 3: {
-				double v1 = eval_arrays(sym, set, tree, tree[start+1], i);
-				double v2 = eval_arrays(sym, set, tree, tree[start+2], i);
-				if (v2 == 0)
-					return 1;
-				else
-					return v1 / v2;
-			}
-			default: {
-				double v = eval_arrays(sym, set, tree, tree[start+1], i);
-				if (v < 0)
-					return sqrt(-v);
-				else
-					return sqrt(v);
-			}
-		}
-	}
-	if (id >= NUM_FUNCTIONAL_SYMBOLS && id < NUM_FUNCTIONAL_SYMBOLS + NUM_VARIABLE_SYMBOLS) {
-		return get_var(set, id - NUM_FUNCTIONAL_SYMBOLS, i);
-	}
-	if (id >= NUM_FUNCTIONAL_SYMBOLS+NUM_VARIABLE_SYMBOLS) {
-		return sym[id];
-	}
-}
-
-extern "C" __global__
-void reduce(double *in_data, double *out_data) {
-	__shared__ double shm[NUM_THREADS];              // Shared memory where to accumulate data
-	int tib = threadIdx.x;                           // ID of thread in its block
-	int tig = blockIdx.x * blockDim.x + threadIdx.x; // ID of thread globally
-
-	// Compute how many data are to be processed in this block
-	int valids = NUM_THREADS;
-	if ((blockIdx.x + 1) * NUM_THREADS > NROWS)
-		valids = NROWS - blockIdx.x * NUM_THREADS;
-	if (tig >= NROWS)
-		return;                                      // Discard threads in excess
-	shm[tib] = in_data[tig];                         // Copy in shared memory the data of this thread
-	__syncthreads();                                 // Make sure all threads finished copying
-	// Reduce by varying sum stride
-	for (int stride = 1; stride < blockDim.x; stride *= 2) {
-		if (tib % (2*stride) == 0 && tib+stride < valids) {
-			shm[tib] += shm[tib + stride];            // Accumulate next element based on stride
-		}
-		__syncthreads(); // Ensure all threads computed
-	}
-	// First thread of every block saves the result
-	if (tib == 0)
-		out_data[blockIdx.x] = shm[0];
-}
-
-extern "C" __global__
-void semantic_eval_arrays(double *sym, double *set, int *tree, double *outs) {
-	int i = blockIdx.x * blockDim.x + threadIdx.x;
-	if (i < NROWS) {
-		outs[i] = eval_arrays(sym, set, tree, 0, i);
-	}
-}
-`, map[string]interface{}{
+	blahblah := load_file_and_replace("./kernels.cu", map[string]interface{}{
 		"NUM_FUNCTIONAL_SYMBOLS": NUM_FUNCTIONAL_SYMBOLS,
 		"NUM_VARIABLE_SYMBOLS":   NUM_VARIABLE_SYMBOLS,
 		"NUM_CONSTANT_SYMBOLS":   NUM_CONSTANT_SYMBOLS,
@@ -1193,107 +1110,40 @@ void semantic_eval_arrays(double *sym, double *set, int *tree, double *outs) {
 		cuda_sem_eval := mod.GetFunction("semantic_eval_arrays")
 		cuda_reduce := mod.GetFunction("reduce")
 
+		out_evals := make([]cFloat64, nrow+nrow_test)
+		out_red := make([]cFloat64, bpg)
+		var gpu_tot cFloat64
+
+		now = time.Now()
+
+		gpu_out_evals.MemSet32(0, -1)
 		// Create tree
 		cpu_tree_arr := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
-		//cpu_tree_arr := []cInt{5} // First variable x0
-		//cpu_tree_arr := []cInt{6} // Second variable x1
-		//cpu_tree_arr := []cInt{8} // Last variable
-		//cpu_tree_arr := []cInt{9} // First constant
-		//cpu_tree_arr := []cInt{12} // Last constant
-		//cpu_tree_arr := []cInt{4, 2, 5} // Sqrt of first variable
-		//cpu_tree_arr := []cInt{4, 2, 9} // Sqrt of first constant
-		//cpu_tree_arr := []cInt{0, 3, 4, 5, 6} // Sum of first two variables
-		//cpu_tree_arr := []cInt{9} // First constant
-		//cpu_tree_arr := []cInt{9} // First constant
-
-		//cpu_tree_arr := []cInt{0, 3, 4, 5, 6} // Sum of two Variables
-		// Get random symbol
-		symid := cInt(cpu_tree_arr[0]) //rand.Intn(len(symbols))
-		gpu_in_id.FromInt32(int32(symid))
-
-		fmt.Println("++++ Selected random symbol", symid)
-		fmt.Println("   isFunc: ", symbols[symid].isFunc)
-		fmt.Println("   Arity : ", symbols[symid].arity)
-		fmt.Println("   Name  : ", symbols[symid].name)
-		fmt.Println("   ID    : ", symbols[symid].id)
-		fmt.Println("   Value : ", symbols[symid].value)
-
-		fmt.Println("")
-
-		fmt.Println("Created tree", cpu_tree_arr)
-		// Transfer only the required elements in the buffer
-		println("Copying bytes:", cInt(C.sizeof_int), len(cpu_tree_arr))
-
 		gpu_tree_arr.FromHostN(unsafe.Pointer(&cpu_tree_arr[0]), C.sizeof_int*len(cpu_tree_arr))
-		//kern.Launch1D(bpg, tpb, 0, gpu_sym_val, gpu_set, gpu_in_id, gpu_out_type, gpu_out_arity, gpu_out_name, gpu_out_val)
-
 		cuda_sem_eval.Launch1D(bpg, tpb, 0, gpu_sym_val, gpu_set, gpu_tree_arr, gpu_out_evals)
 		cuda_reduce.Launch1D(bpg, tpb, 0, gpu_out_evals, gpu_out_reduce)
-
 		ctx.Synchronize()
 
-		fmt.Println("Sets on CPU:")
-		if false {
-			for i := 0; i < 10; i++ {
-				fmt.Println(cpu_set[i])
-			}
+		//gpu_out_evals.FromDevice(unsafe.Pointer(&out_evals[0]))
+		gpu_out_reduce.FromDevice(unsafe.Pointer(&out_red[0]))
+		for ii := range out_red {
+			gpu_tot += out_red[ii]
 		}
-		/*
-			var (
-				out_type  = gpu_out_type.ToInt32()
-				out_arity = gpu_out_arity.ToInt32()
-				out_name  = gpu_out_name.ToInt32()
-				out_val   = gpu_out_val.ToFloat64()
-			)
-		*/
 
-		out_evals := make([]cFloat64, nrow+nrow_test)
-		gpu_out_evals.FromDevice(unsafe.Pointer(&out_evals[0]))
+		elapsed_gpu := time.Since(now)
 
 		var cpu_sum cFloat64
-		fmt.Println("Evaluations from GPU")
+		now = time.Now()
 		for i := range out_evals {
 			evv := eval_arrays(cpu_tree_arr, 0, cInt(i))
-			//fmt.Println("GPU", out_evals[i], "CPU", evv)
 			cpu_sum += evv
 		}
 
-		out_red := make([]cFloat64, bpg)
-		gpu_out_reduce.FromDevice(unsafe.Pointer(&out_red[0]))
-		var gpu_tot cFloat64
-		for ii := range out_red {
-			fmt.Println("Blocco", ii, "risultato", out_red[ii])
-			gpu_tot += out_red[ii]
-		}
+		elapsed_cpu := time.Since(now)
+
 		fmt.Println("Reduced sum GPU", gpu_tot, "CPU", cpu_sum)
 
-		/*
-			types := []string{"functional", "variable", "constant"}
-
-			fmt.Println("RESULTS")
-			fmt.Println("    Type :", out_type, types[out_type-1])
-			fmt.Println("    Arity:", out_arity)
-			fmt.Println("    Name :", out_name)
-			fmt.Println("    Value:", out_val)
-
-			if symbols[symid].isFunc && out_type != 1 {
-				fmt.Println("  ERROR: CUDA is not reporting symbol as a functional")
-			}
-			if symbols[symid].isFunc && symbols[symid].arity != cInt(out_arity) {
-				fmt.Println("  ERROR: CUDA arity is different from true arity")
-			}
-			if symid >= NUM_FUNCTIONAL_SYMBOLS && symid < NUM_FUNCTIONAL_SYMBOLS+NUM_VARIABLE_SYMBOLS && out_type != 2 {
-				fmt.Println("  ERROR: CUDA is reporting a different type instead of variable")
-			}
-		*/
-		/*
-				// Variables take their value from the input data
-				return set[i].vars[sym.id-NUM_FUNCTIONAL_SYMBOLS]
-			} else {
-				// The value of a constant can be used directly
-				return sym.value
-			}
-		*/
+		fmt.Println("Timing GPU", elapsed_gpu, "CPU", elapsed_cpu)
 
 		t := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
 		fmt.Println(t)
