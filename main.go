@@ -158,10 +158,7 @@ var (
 
 	index_best cInt // Index of the best individual (where? sem_*?)
 
-	treechan chan []cInt
-	semchan  chan Semantic // Channel to move semantics fromm device to host
-
-	f_cpu_sem, f_gpu_sem *os.File // TODO this is only for debugging CPU-vs-GPU
+	semchan chan Semantic // Channel to move semantics fromm device to host
 )
 
 func init() {
@@ -739,59 +736,18 @@ func semantic_evaluate(el *Node, sem_size, sem_offs cInt) (cFloat64, Semantic) {
 	return d, val
 }
 
-// Calculates the semantics (considering training instances) of a randomly generated tree. The tree is used to perform the semantic geometric crossover or the geometric semantic mutation
-func semantic_evaluate_random_array(tree []cInt, sem_size, sem_offs cInt) Semantic {
-	sem := make(Semantic, sem_size)
-	if !*config.use_goroutines {
-		for i := sem_offs; i < sem_offs+sem_size; i++ {
-			sem[i-sem_offs] = eval_arrays(tree, 0, i)
-		}
-	} else {
-		sc := make(chan bool) // Sync channel
-		// Create some workers to work on chunks of rows
-		nw := cInt(runtime.NumCPU())
-		for w := cInt(0); w < nw; w++ {
-			go func(id cInt) {
-				// Each worker uses a partition of the dataset
-				for i := id + sem_offs; i < sem_offs+sem_size; i += nw {
-					sem[i-sem_offs] = eval_arrays(tree, 0, i)
-				}
-				sc <- true
-			}(w)
-		}
-		for w := cInt(0); w < nw; w++ {
-			<-sc
-		}
-	}
-	return sem
-}
-
 func random_tree_semantics() (Semantic, Semantic) {
-	// Generate a tree
-	rt := create_grow_tree(0, nil, cInt(*config.max_depth_creation))
-	// Doing this here for debugging FIXME
-	_, s_tr := semantic_evaluate(rt, cInt(nrow), 0)
-	_, s_te := semantic_evaluate(rt, cInt(nrow_test), cInt(nrow))
-	fmt.Fprintln(f_cpu_sem, "Tree used", write_tree(rt))
-	fmt.Fprintln(f_cpu_sem, "Arry used", tree_to_array(rt))
-	fmt.Fprintln(f_cpu_sem, "CPU train", s_tr)
-	fmt.Fprintln(f_cpu_sem, "CPU test", s_te)
 	if !*config.use_cuda {
 		// Generate a random tree and compute its semantic (train and test)
-		return s_tr, s_te
+		rt := create_grow_tree(0, nil, cInt(*config.max_depth_creation))
+		_, sem_train := semantic_evaluate(rt, cInt(nrow), 0)
+		_, sem_test := semantic_evaluate(rt, cInt(nrow_test), cInt(nrow))
+		return sem_train, sem_test
 	} else {
-		// Send tree to GPU for processing TODO remove and generate directly in the goroutine
-		treechan <- tree_to_array(rt)
 		// Get semantic from GPU
 		sem := <-semchan
-		sem_train, sem_test := sem[:nrow], sem[nrow:]
-		fmt.Fprintln(f_gpu_sem, "Tree used", write_tree(rt))
-		fmt.Fprintln(f_gpu_sem, "Arry used", tree_to_array(rt))
-		fmt.Fprintln(f_gpu_sem, "GPU train", sem_train)
-		fmt.Fprintln(f_gpu_sem, "GPU test", sem_test)
-		//log.Println("CPU tr sem", s_tr)
-		//log.Println("GPU tr sem", sem_train)
 		// Split into train and test semantics
+		sem_train, sem_test := sem[:nrow], sem[nrow:]
 		return sem_train, sem_test
 	}
 }
@@ -982,9 +938,6 @@ func (a Arities) String() string {
 	return fmt.Sprintf("[%d] = {%v}", len(a), strings.Trim(strings.Replace(fmt.Sprint(([]cInt)(a)), " ", ", ", -1), "[]"))
 }
 
-// TODO alternative approach: instead of generating source codes and compiling them
-// it could be better to let the kernel evaluate the tree. To make it easier to pass the data around
-// the tree could be implemented using an array instead of linked nodes
 func cuda_tree_generator() {
 	// CUDA context is bound to a specific thread, therefore it is necessary to lock this
 	// goroutine to the current thread
@@ -994,6 +947,7 @@ func cuda_tree_generator() {
 	cuda.Init()
 	devs := cuda.GetDevices()
 	maj, min := cuda.GetNVRTCVersion()
+	// Be verbose on GPU being used
 	fmt.Println("CUDA Driver Version:", cuda.GetVersion())
 	fmt.Println("NVRTC Version:", maj, min)
 	fmt.Println("CUDA Num devices:", cuda.GetDevicesCount())
@@ -1008,13 +962,12 @@ func cuda_tree_generator() {
 	// Create context and make it current
 	ctx := cuda.Create(devs[0], 0)
 	defer ctx.Destroy() // When done
-	//ctx.SetCurrent()
 	fmt.Println("Context API version:", ctx.GetApiVersion())
-	ctx.Synchronize()
+	ctx.Synchronize() // Check for errors
 	fmt.Println("CUDA initialized successfully")
 
 	// Prepare grid dimensions
-	tpb := 32 //256 // TODO Get this from attr. Currently set to value near warp size
+	tpb := 256 // TODO Get this from attr
 	bpg := (nrow + nrow_test + tpb - 1) / tpb
 
 	fmt.Println("CUDA Threads Per Block", tpb)
@@ -1022,47 +975,40 @@ func cuda_tree_generator() {
 
 	// Allocate memory for GPU computation
 	var (
-		len_ds   = C.size_t(nrow + nrow_test)
-		num_vars = C.size_t(nvar + 1)
-		cpu_out  = make([]cFloat64, nrow+nrow_test)
-		cpu_set  = make([]cFloat64, (nrow+nrow_test)*(nvar+1))
-		gpu_set  = cuda.NewBuffer(int(C.sizeof_double * len_ds * num_vars))
+		len_ds         = C.size_t(nrow + nrow_test)                                             // Length of dataset
+		num_vars       = C.size_t(nvar + 1)                                                     // Number of variables
+		cpu_out        = make([]cFloat64, nrow+nrow_test)                                       // Storage for semantic
+		cpu_set        = make([]cFloat64, (nrow+nrow_test)*(nvar+1))                            // Temporary storage for dataset
+		gpu_set        = cuda.NewBuffer(int(C.sizeof_double * len_ds * num_vars))               // Storage for dataset
+		cpu_sym_val    = make([]cFloat64, len(symbols))                                         // Temporary storage for symbols
+		gpu_sym_val    = cuda.NewBuffer(C.sizeof_double * len(symbols))                         // Storage for symbols
+		gpu_tree_arr   = cuda.NewBuffer(C.sizeof_int * (2 << uint(*config.max_depth_creation))) // Storage for generated trees
+		num_evals      = tpb * int(math.Ceil(float64(nrow+nrow_test)/float64(tpb)))             // Align dataset size to threads in block
+		gpu_out_evals  = cuda.NewBuffer(C.sizeof_double * num_evals)                            // Output of semantic evaluation
+		gpu_out_reduce = cuda.NewBuffer(C.sizeof_double * bpg)                                  // Output for reduction (for fitness)
+		out_reduce     = make([]cFloat64, bpg)                                                  // CPU output for reduction
 	)
 	// Copy datasets, including target which is used to compute fitness
 	for i := 0; i < nrow+nrow_test; i++ {
 		for j := 0; j < nvar; j++ {
-			cpu_set[i*(nvar+1)+j] = cFloat64(set[i].vars[j]) //C.double(set[i].vars[j])
+			cpu_set[i*(nvar+1)+j] = cFloat64(set[i].vars[j])
 		}
-		cpu_set[i*(nvar+1)+nvar] = cFloat64(set[i].y_value) //C.double(set[i].y_value)
+		cpu_set[i*(nvar+1)+nvar] = cFloat64(set[i].y_value)
 	}
 	// Transfer to GPU
 	gpu_set.FromHost(unsafe.Pointer(&cpu_set[0]))
 
-	// Copy symbol table to GPU
-	var (
-		cpu_sym_val = make([]cFloat64, len(symbols))
-		gpu_sym_val = cuda.NewBuffer(C.sizeof_double * len(symbols))
-
-		// Eval of array
-		gpu_tree_arr = cuda.NewBuffer(C.sizeof_int * 1000) // Make this large enough for any generated tree TODO compute this value
-
-		// Create array for output values
-		// Make it aligned to number of threads to make GPU computation more efficient
-		num_evals     = tpb * int(math.Ceil(float64(nrow+nrow_test)/float64(tpb)))
-		gpu_out_evals = cuda.NewBuffer(C.sizeof_double * num_evals)
-
-		gpu_out_reduce = cuda.NewBuffer(C.sizeof_double * bpg)
-	)
-	// Copy symbols value // FIXME controllare da dove si inizia perché le variabili non mi sembrano giuste
+	// Copy symbols value
 	for i := range symbols {
 		if !symbols[i].isFunc {
 			cpu_sym_val[i] = cFloat64(symbols[i].value)
 		} else {
-			cpu_sym_val[i] = -1
+			cpu_sym_val[i] = -1 // Functionals have no value
 		}
 	}
 	gpu_sym_val.FromHost(unsafe.Pointer(&cpu_sym_val[0]))
 
+	// Load CUDA code and replace some variables
 	kernel_src := load_file_and_replace("./kernels.cu", map[string]interface{}{
 		"NUM_FUNCTIONAL_SYMBOLS": NUM_FUNCTIONAL_SYMBOLS,
 		"NUM_VARIABLE_SYMBOLS":   NUM_VARIABLE_SYMBOLS,
@@ -1076,53 +1022,37 @@ func cuda_tree_generator() {
 	prog := cuda.CreateProgram(cuda.Source{kernel_src, "semantic_eval_arrays"}, nil)
 	prog.Compile(nil)
 	mod.LoadData(prog)
+	// Kernels being used
 	cuda_sem_eval := mod.GetFunction("semantic_eval_arrays")
 	cuda_reduce := mod.GetFunction("reduce")
-
-	out_red := make([]cFloat64, bpg)
 
 	gpu_out_evals.MemSet32(0, -1)
 
 	// This goroutine will keep producing random trees
 	for {
-		//	fmt.Println("Generating tree with CUDA...")
-
 		// Create tree on host and move it to device
-		// tree := create_grow_tree(0, nil, cInt(*config.max_depth_creation))
-		// cpu_tree_arr := tree_to_array(tree)
-		//cpu_tree_arr := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
+		cpu_tree_arr := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
 		// Read the tree from the channel, so that we can compare CPU and GPU
-		cpu_tree_arr := <-treechan
-
 		gpu_tree_arr.FromHostN(unsafe.Pointer(&cpu_tree_arr[0]), C.sizeof_int*len(cpu_tree_arr))
 		// Evaluate the tree and sum-reduce the semantics
 		cuda_sem_eval.Launch1D(bpg, tpb, 0, gpu_sym_val, gpu_set, gpu_tree_arr, gpu_out_evals)
 		// Reduce (not used right now, but relevant later)
 		cuda_reduce.Launch1D(bpg, tpb, 0, gpu_out_evals, gpu_out_reduce)
 		ctx.Synchronize()
-
-		gpu_out_reduce.FromDevice(unsafe.Pointer(&out_red[0]))
-		// Compute average
-		var gpu_avg cFloat64
-		for ii := range out_red {
-			gpu_avg += out_red[ii]
+		// Copy back reduction
+		if false { // Currently not used
+			gpu_out_reduce.FromDevice(unsafe.Pointer(&out_reduce[0]))
+			// Compute average
+			var gpu_avg cFloat64
+			for ii := range out_reduce {
+				gpu_avg += out_reduce[ii]
+			}
+			gpu_avg = gpu_avg
 		}
-		gpu_avg = gpu_avg
-
 		// Copy semantic back to host
 		gpu_out_evals.FromDeviceN(unsafe.Pointer(&cpu_out[0]), len(cpu_out)*C.sizeof_double)
-
-		//log.Println("Generated array", cpu_tree_arr)
-		//log.Println("GPU output sem:", cpu_out)
-		//_, cpu_sem := semantic_evaluate(tree, cInt(nrow+nrow_test), 0)
-		//log.Println("CPU output sem:", cpu_sem)
-
-		// Save semantics
+		// Send semantic on channel to beused
 		semchan <- cpu_out
-		// Print out some stats
-		//if create_count%10 == 0 {
-		//	fmt.Println("Timing stats averages. create_time:", (create_time / create_count), "build_time:", (build_time / build_count), "running_time", (running_time / running_count))
-		//}
 	}
 }
 
@@ -1171,9 +1101,6 @@ func main() {
 	fitness_test := create_or_panic("fitnesstest.txt")
 	defer fitness_test.Close()
 
-	f_cpu_sem = create_or_panic("cpu_semantics.txt")
-	defer f_cpu_sem.Close()
-
 	// Tracking time
 	var start time.Time
 	start = time.Now()
@@ -1185,36 +1112,10 @@ func main() {
 	// Create tables with terminals and functionals
 	create_T_F()
 
-	// Test tree to array conversion
-	if false {
-		r := create_grow_tree(0, nil, 6)
-		fmt.Println("Generated tree", write_tree(r))
-
-		a := tree_to_array(r)
-		fmt.Println("Tree to array", a)
-
-		fmt.Println("Eval tree", eval(r, 0))
-		fmt.Println("Eval arry", eval_arrays(a, 0, 0))
-
-		os.Exit(0)
-	}
-
 	if *config.use_cuda {
-		// Save semantics on file only when required
-		f_gpu_sem = create_or_panic("gpu_semantics.txt")
-		defer f_gpu_sem.Close()
 		// A separate goroutine will handle CUDA
-		treechan = make(chan []cInt)
-		semchan = make(chan Semantic) //, 4) Use buffers later to improve speed
+		semchan = make(chan Semantic, 4) // Buffered channel to have results ready if GPU is faster
 		go cuda_tree_generator()
-	}
-
-	// Test arrays
-	if false {
-		t := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
-		fmt.Println(t)
-		fmt.Println(eval_arrays(t, 0, 0))
-		os.Exit(0)
 	}
 
 	// Create population and feed
