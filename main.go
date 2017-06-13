@@ -31,6 +31,7 @@ import (
 	"fmt"
 	cuda "github.com/akiross/go-cudart"
 	"io/ioutil"
+	"log"
 	"math"
 	"math/rand"
 	"os"
@@ -157,7 +158,10 @@ var (
 
 	index_best cInt // Index of the best individual (where? sem_*?)
 
-	semchan chan Semantic // Channel to move semantics fromm device to host
+	treechan chan []cInt
+	semchan  chan Semantic // Channel to move semantics fromm device to host
+
+	f_cpu_sem, f_gpu_sem *os.File // TODO this is only for debugging CPU-vs-GPU
 )
 
 func init() {
@@ -531,16 +535,37 @@ func create_full_tree(depth cInt, parent *Node, max_depth cInt) *Node {
 	return el
 }
 
+// Convert a Node-based tree to a array-based tree
+func tree_to_array(root *Node) []cInt {
+	var rec_build func(n *Node, base cInt) []cInt
+	rec_build = func(n *Node, base cInt) []cInt {
+		if n.root.isFunc {
+			t := make([]cInt, n.root.arity+1)
+			t[0] = cInt(n.root.id)
+			for c := range n.children {
+				t[c+1] = cInt(len(t)) + base
+				ct := rec_build(n.children[c], t[c+1]) //base+n.root.arity+1)
+				t = append(t, ct...)
+			}
+			return t
+		} else {
+			return []cInt{cInt(n.root.id)}
+		}
+	}
+
+	return rec_build(root, 0)
+}
+
 // Return a string representing a tree (S-expr)
 func write_tree(el *Node) string {
 	if el.root.isFunc {
-		out := "(" + el.root.name + " "
+		out := fmt.Sprintf("(%v[%v] ", el.root.name, el.root.id) //"(" + el.root.name + "[" + "] "
 		for i := cInt(0); i < el.root.arity-1; i++ {
 			out += write_tree(el.children[i]) + " "
 		}
 		return out + write_tree(el.children[el.root.arity-1]) + ")"
 	} else {
-		return el.root.name // This should be the variable name or the constant value
+		return fmt.Sprintf("%v[%v]", el.root.name, el.root.id) // el.root.name // This should be the variable name or the constant value
 	}
 }
 
@@ -652,55 +677,8 @@ func eval_arrays(tree []cInt, start cInt, i cInt) cFloat64 {
 			return cFloat64(math.Sqrt(float64(v)))
 		}
 	default:
-		//fmt.Println("Found terminal w/ ID", symbols[tree[start]].id, "at pos", start, terminal_value(i, symbols[tree[start]]), "i is", i)
 		return terminal_value(i, symbols[tree[start]]) // Root points to a terminal
 	}
-}
-
-func eval_to_expr(tree *Node) string {
-	switch {
-	case tree.root == nil:
-		panic("Cannot convert nil Node to kernel")
-	case tree.root.isFunc:
-		switch tree.root.name {
-		case "+":
-			return fmt.Sprintf("(%s + %s)", eval_to_expr(tree.children[0]), eval_to_expr(tree.children[1]))
-		case "-":
-			return fmt.Sprintf("(%s - %s)", eval_to_expr(tree.children[0]), eval_to_expr(tree.children[1]))
-		case "*":
-			return fmt.Sprintf("(%s * %s)", eval_to_expr(tree.children[0]), eval_to_expr(tree.children[1]))
-		case "/":
-			c0, c1 := eval_to_expr(tree.children[0]), eval_to_expr(tree.children[1])
-			return fmt.Sprintf("((%s != 0) ? (%s / %s) : 1)", c1, c0, c1)
-		case "sqrt":
-			v := eval_to_expr(tree.children[0])
-			return fmt.Sprintf("((%s < 0) ? sqrt(-%s) : sqrt(%s))", v, v, v)
-		//case "^":
-		//	return math.Pow(eval(tree.children[0], i), eval(tree.children[1], i))
-		default:
-			panic("Undefined symbol: '" + tree.root.name + "' when converting Node to kernel")
-		}
-	default:
-		sym := tree.root
-		if sym.id >= NUM_FUNCTIONAL_SYMBOLS && sym.id < NUM_FUNCTIONAL_SYMBOLS+NUM_VARIABLE_SYMBOLS {
-			return fmt.Sprintf("set[i * wide + %d]", sym.id-NUM_FUNCTIONAL_SYMBOLS)
-			//return set[i].vars[sym.id-NUM_FUNCTIONAL_SYMBOLS]
-		} else {
-			return fmt.Sprintf("(%v)", sym.value)
-		}
-	}
-}
-
-func eval_to_kernel(tree *Node, name string) string {
-	return fmt.Sprintf(`extern "C" __global__
-void %s(double *out, double *set) {
-	cInt i = blockIdx.x * blockDim.x + threadIdx.x;
-	cInt len = %d;
-	cInt wide = %d;
-	if (i < len)
-		out[i] = %s;
-}
-`, name, nrow+nrow_test, nvar+1, eval_to_expr(tree))
 }
 
 // Calculates the fitness of all the individuals and determines the best individual in the population
@@ -726,8 +704,7 @@ func evaluate(p *Population) {
 	}
 }
 
-// Calculates the training fitness of an individual (representing as a tree).
-// This function will append to sem_train_cases the semantic of the evaluated node.
+// Calculates semantic and training fitness of an individual (representing as a tree)
 func semantic_evaluate(el *Node, sem_size, sem_offs cInt) (cFloat64, Semantic) {
 	var d cFloat64
 	val := make(Semantic, sem_size)
@@ -763,11 +740,11 @@ func semantic_evaluate(el *Node, sem_size, sem_offs cInt) (cFloat64, Semantic) {
 }
 
 // Calculates the semantics (considering training instances) of a randomly generated tree. The tree is used to perform the semantic geometric crossover or the geometric semantic mutation
-func semantic_evaluate_random(el *Node, sem_size, sem_offs cInt) Semantic {
+func semantic_evaluate_random_array(tree []cInt, sem_size, sem_offs cInt) Semantic {
 	sem := make(Semantic, sem_size)
 	if !*config.use_goroutines {
 		for i := sem_offs; i < sem_offs+sem_size; i++ {
-			sem[i-sem_offs] = eval(el, i)
+			sem[i-sem_offs] = eval_arrays(tree, 0, i)
 		}
 	} else {
 		sc := make(chan bool) // Sync channel
@@ -777,7 +754,7 @@ func semantic_evaluate_random(el *Node, sem_size, sem_offs cInt) Semantic {
 			go func(id cInt) {
 				// Each worker uses a partition of the dataset
 				for i := id + sem_offs; i < sem_offs+sem_size; i += nw {
-					sem[i-sem_offs] = eval(el, i)
+					sem[i-sem_offs] = eval_arrays(tree, 0, i)
 				}
 				sc <- true
 			}(w)
@@ -790,20 +767,32 @@ func semantic_evaluate_random(el *Node, sem_size, sem_offs cInt) Semantic {
 }
 
 func random_tree_semantics() (Semantic, Semantic) {
+	// Generate a tree
+	rt := create_grow_tree(0, nil, cInt(*config.max_depth_creation))
+	// Doing this here for debugging FIXME
+	_, s_tr := semantic_evaluate(rt, cInt(nrow), 0)
+	_, s_te := semantic_evaluate(rt, cInt(nrow_test), cInt(nrow))
+	fmt.Fprintln(f_cpu_sem, "Tree used", write_tree(rt))
+	fmt.Fprintln(f_cpu_sem, "Arry used", tree_to_array(rt))
+	fmt.Fprintln(f_cpu_sem, "CPU train", s_tr)
+	fmt.Fprintln(f_cpu_sem, "CPU test", s_te)
 	if !*config.use_cuda {
 		// Generate a random tree and compute its semantic (train and test)
-		now := time.Now()
-		rt := create_grow_tree(0, nil, cInt(*config.max_depth_creation))
-		sem_train := semantic_evaluate_random(rt, cInt(nrow), 0)
-		sem_test := semantic_evaluate_random(rt, cInt(nrow_test), cInt(nrow))
-		tot_time := time.Since(now)
-		fmt.Println("Time to generate and evaluate a tree:", tot_time)
-		return sem_train, sem_test
+		return s_tr, s_te
 	} else {
+		// Send tree to GPU for processing TODO remove and generate directly in the goroutine
+		treechan <- tree_to_array(rt)
 		// Get semantic from GPU
 		sem := <-semchan
+		sem_train, sem_test := sem[:nrow], sem[nrow:]
+		fmt.Fprintln(f_gpu_sem, "Tree used", write_tree(rt))
+		fmt.Fprintln(f_gpu_sem, "Arry used", tree_to_array(rt))
+		fmt.Fprintln(f_gpu_sem, "GPU train", sem_train)
+		fmt.Fprintln(f_gpu_sem, "GPU test", sem_test)
+		//log.Println("CPU tr sem", s_tr)
+		//log.Println("GPU tr sem", sem_train)
 		// Split into train and test semantics
-		return sem[:nrow], sem[nrow:]
+		return sem_train, sem_test
 	}
 }
 
@@ -997,8 +986,6 @@ func (a Arities) String() string {
 // it could be better to let the kernel evaluate the tree. To make it easier to pass the data around
 // the tree could be implemented using an array instead of linked nodes
 func cuda_tree_generator() {
-	now := time.Now()
-
 	// CUDA context is bound to a specific thread, therefore it is necessary to lock this
 	// goroutine to the current thread
 	runtime.LockOSThread()
@@ -1039,7 +1026,6 @@ func cuda_tree_generator() {
 		num_vars = C.size_t(nvar + 1)
 		cpu_out  = make([]cFloat64, nrow+nrow_test)
 		cpu_set  = make([]cFloat64, (nrow+nrow_test)*(nvar+1))
-		gpu_out  = cuda.NewBuffer(int(C.sizeof_double * len_ds))
 		gpu_set  = cuda.NewBuffer(int(C.sizeof_double * len_ds * num_vars))
 	)
 	// Copy datasets, including target which is used to compute fitness
@@ -1077,7 +1063,7 @@ func cuda_tree_generator() {
 	}
 	gpu_sym_val.FromHost(unsafe.Pointer(&cpu_sym_val[0]))
 
-	blahblah := load_file_and_replace("./kernels.cu", map[string]interface{}{
+	kernel_src := load_file_and_replace("./kernels.cu", map[string]interface{}{
 		"NUM_FUNCTIONAL_SYMBOLS": NUM_FUNCTIONAL_SYMBOLS,
 		"NUM_VARIABLE_SYMBOLS":   NUM_VARIABLE_SYMBOLS,
 		"NUM_CONSTANT_SYMBOLS":   NUM_CONSTANT_SYMBOLS,
@@ -1085,115 +1071,58 @@ func cuda_tree_generator() {
 		"NUM_THREADS":            tpb,
 	})
 
-	setup_time := time.Since(now)
-	fmt.Println("CUDA Setup time:", setup_time)
-
+	// Prepare kernels to eval and reduce trees
 	mod := cuda.CreateModule()
+	prog := cuda.CreateProgram(cuda.Source{kernel_src, "semantic_eval_arrays"}, nil)
+	prog.Compile(nil)
+	mod.LoadData(prog)
+	cuda_sem_eval := mod.GetFunction("semantic_eval_arrays")
+	cuda_reduce := mod.GetFunction("reduce")
 
-	var build_time, create_time, running_time time.Duration
-	var build_count, create_count, running_count time.Duration
+	out_red := make([]cFloat64, bpg)
 
-	now = time.Now()
-	// Create a tree and convert it to a kernel function
-	test_tree := create_grow_tree(0, nil, cInt(*config.max_depth_creation))
-	test_src := eval_to_kernel(test_tree, "kernel_test")
-	create_time = time.Since(now)
-	create_count++
-
-	// Test arrays
-	if true {
-		//fmt.Println("Kernel being used:\n", blahblah)
-
-		prog := cuda.CreateProgram(cuda.Source{blahblah, "semantic_eval_arrays"}, nil)
-		prog.Compile(nil)
-		mod.LoadData(prog)
-		cuda_sem_eval := mod.GetFunction("semantic_eval_arrays")
-		cuda_reduce := mod.GetFunction("reduce")
-
-		out_evals := make([]cFloat64, nrow+nrow_test)
-		out_red := make([]cFloat64, bpg)
-		var gpu_tot cFloat64
-
-		now = time.Now()
-
-		gpu_out_evals.MemSet32(0, -1)
-		// Create tree
-		cpu_tree_arr := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
-		gpu_tree_arr.FromHostN(unsafe.Pointer(&cpu_tree_arr[0]), C.sizeof_int*len(cpu_tree_arr))
-		cuda_sem_eval.Launch1D(bpg, tpb, 0, gpu_sym_val, gpu_set, gpu_tree_arr, gpu_out_evals)
-		cuda_reduce.Launch1D(bpg, tpb, 0, gpu_out_evals, gpu_out_reduce)
-		ctx.Synchronize()
-
-		//gpu_out_evals.FromDevice(unsafe.Pointer(&out_evals[0]))
-		gpu_out_reduce.FromDevice(unsafe.Pointer(&out_red[0]))
-		for ii := range out_red {
-			gpu_tot += out_red[ii]
-		}
-
-		elapsed_gpu := time.Since(now)
-
-		var cpu_sum cFloat64
-		now = time.Now()
-		for i := range out_evals {
-			evv := eval_arrays(cpu_tree_arr, 0, cInt(i))
-			cpu_sum += evv
-		}
-
-		elapsed_cpu := time.Since(now)
-
-		fmt.Println("Reduced sum GPU", gpu_tot, "CPU", cpu_sum)
-
-		fmt.Println("Timing GPU", elapsed_gpu, "CPU", elapsed_cpu)
-
-		t := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
-		fmt.Println(t)
-		fmt.Println(eval_arrays(t, 0, 0))
-
-		// Copy array to GPU
-
-		os.Exit(0)
-	}
+	gpu_out_evals.MemSet32(0, -1)
 
 	// This goroutine will keep producing random trees
 	for {
-		//fmt.Println("Generating tree with CUDA...")
-		now = time.Now()
-		// Compile the function and load on device
-		prog := cuda.CreateProgram(cuda.Source{test_src, "kernel_test"}, nil)
-		prog.Compile(nil)
-		mod.LoadData(prog)
-		// Get the function and run
-		kernel := mod.GetFunction("kernel_test")
-		build_time += time.Since(now)
-		build_count++
-		now = time.Now()
-		kernel.Launch1D(bpg, tpb, 0, gpu_out, gpu_set)
-		// Copy back the results
-		cpu_out = make([]cFloat64, nrow+nrow_test)
-		gpu_out.FromDevice(unsafe.Pointer(&cpu_out[0]))
-		running_time += time.Since(now)
-		running_count++
-		// Create next tree while kernel is executing
-		now = time.Now()
-		test_tree = create_grow_tree(0, nil, cInt(*config.max_depth_creation))
-		test_src = eval_to_kernel(test_tree, "kernel_test")
-		create_time += time.Since(now) // Accumulate timing for kernel building
-		create_count++
-		semchan <- cpu_out
-		/*
-			// Convert to semantics
-			sem := make(Semantic, nrow+nrow_test)
-			for i := 0; i < nrow+nrow_test; i++ {
-				sem[i] = cFloat64(cpu_out[i])
-			}
-			// Enqueue this results
-			semchan <- sem
-		*/
+		//	fmt.Println("Generating tree with CUDA...")
 
-		// Print out some stats
-		if create_count%10 == 0 {
-			fmt.Println("Timing stats averages. create_time:", (create_time / create_count), "build_time:", (build_time / build_count), "running_time", (running_time / running_count))
+		// Create tree on host and move it to device
+		// tree := create_grow_tree(0, nil, cInt(*config.max_depth_creation))
+		// cpu_tree_arr := tree_to_array(tree)
+		//cpu_tree_arr := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
+		// Read the tree from the channel, so that we can compare CPU and GPU
+		cpu_tree_arr := <-treechan
+
+		gpu_tree_arr.FromHostN(unsafe.Pointer(&cpu_tree_arr[0]), C.sizeof_int*len(cpu_tree_arr))
+		// Evaluate the tree and sum-reduce the semantics
+		cuda_sem_eval.Launch1D(bpg, tpb, 0, gpu_sym_val, gpu_set, gpu_tree_arr, gpu_out_evals)
+		// Reduce (not used right now, but relevant later)
+		cuda_reduce.Launch1D(bpg, tpb, 0, gpu_out_evals, gpu_out_reduce)
+		ctx.Synchronize()
+
+		gpu_out_reduce.FromDevice(unsafe.Pointer(&out_red[0]))
+		// Compute average
+		var gpu_avg cFloat64
+		for ii := range out_red {
+			gpu_avg += out_red[ii]
 		}
+		gpu_avg = gpu_avg
+
+		// Copy semantic back to host
+		gpu_out_evals.FromDeviceN(unsafe.Pointer(&cpu_out[0]), len(cpu_out)*C.sizeof_double)
+
+		//log.Println("Generated array", cpu_tree_arr)
+		//log.Println("GPU output sem:", cpu_out)
+		//_, cpu_sem := semantic_evaluate(tree, cInt(nrow+nrow_test), 0)
+		//log.Println("CPU output sem:", cpu_sem)
+
+		// Save semantics
+		semchan <- cpu_out
+		// Print out some stats
+		//if create_count%10 == 0 {
+		//	fmt.Println("Timing stats averages. create_time:", (create_time / create_count), "build_time:", (build_time / build_count), "running_time", (running_time / running_count))
+		//}
 	}
 }
 
@@ -1213,7 +1142,7 @@ func main() {
 	}
 
 	if *config.use_goroutines {
-		fmt.Println("Using goroutines with", runtime.NumCPU(), "CPUs")
+		log.Println("Using goroutines with", runtime.NumCPU(), "CPUs")
 	}
 
 	if *cpuprofile != "" {
@@ -1242,6 +1171,9 @@ func main() {
 	fitness_test := create_or_panic("fitnesstest.txt")
 	defer fitness_test.Close()
 
+	f_cpu_sem = create_or_panic("cpu_semantics.txt")
+	defer f_cpu_sem.Close()
+
 	// Tracking time
 	var start time.Time
 	start = time.Now()
@@ -1253,16 +1185,32 @@ func main() {
 	// Create tables with terminals and functionals
 	create_T_F()
 
+	// Test tree to array conversion
+	if false {
+		r := create_grow_tree(0, nil, 6)
+		fmt.Println("Generated tree", write_tree(r))
+
+		a := tree_to_array(r)
+		fmt.Println("Tree to array", a)
+
+		fmt.Println("Eval tree", eval(r, 0))
+		fmt.Println("Eval arry", eval_arrays(a, 0, 0))
+
+		os.Exit(0)
+	}
+
 	if *config.use_cuda {
+		// Save semantics on file only when required
+		f_gpu_sem = create_or_panic("gpu_semantics.txt")
+		defer f_gpu_sem.Close()
 		// A separate goroutine will handle CUDA
-		semchan = make(chan Semantic, 4)
+		treechan = make(chan []cInt)
+		semchan = make(chan Semantic) //, 4) Use buffers later to improve speed
 		go cuda_tree_generator()
 	}
 
-	time.Sleep(40 * time.Second)
-
 	// Test arrays
-	if true {
+	if false {
 		t := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
 		fmt.Println(t)
 		fmt.Println(eval_arrays(t, 0, 0))

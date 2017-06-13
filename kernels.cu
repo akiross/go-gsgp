@@ -64,46 +64,8 @@ void reduce(double *in_data, double *out_data) {
 			shm[0] += shm[i];
 		}
 	}
-	if (false) {
-		for (int i = blockDim.x >> 1; i > 0; i = i >> 1) {
-			if (threadIdx.x < i)
-				shm[threadIdx.x] += shm[threadIdx.x + i];
-		}
-		__syncthreads();
-	}
 	if (threadIdx.x == 0) {
 		out_data[blockIdx.x] = shm[0];
-	}
-
-	if (false) {
-
-		//int tig = blockIdx.x * 2 * blockDim.x + threadIdx.x; // ID of thread globally
-
-		//if (tig >= NROWS)
-		//	return;                                      // Discard threads in excess
-
-		shm[tib] = in_data[tig];                         // Copy in shared memory the data of this thread
-
-		//shm[tib] = in_data[tig] + in_data[tig+blockDim.x];//                         // Copy in shared memory the data of this thread
-
-		__syncthreads();                                 // Make sure all threads finished copying
-		for (int stride = blockDim.x / 2; stride > 0; stride = stride / 2) {
-			if (tib < stride)
-				shm[tib] += shm[tib+stride];
-		}
-		// Unroll last iterations to save threads
-		if (false && tib < 32) {
-			shm[tib] += shm[tib + 32];
-			shm[tib] += shm[tib + 16];
-			shm[tib] += shm[tib +  8];
-			shm[tib] += shm[tib +  4];
-			shm[tib] += shm[tib +  2];
-			shm[tib] += shm[tib +  1];
-		}
-
-		// First thread of every block saves the result
-		if (tib == 0)
-			out_data[blockIdx.x] = shm[0];
 	}
 }
 
