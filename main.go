@@ -294,7 +294,7 @@ func create_T_F() {
 		{"-", 2},
 		{"*", 2},
 		{"/", 2},
-		{"sqrt", 1},
+		//{"sqrt", 1},
 	}
 	NUM_FUNCTIONAL_SYMBOLS = cInt(len(fs))
 	for i, s := range fs {
@@ -948,45 +948,45 @@ func cuda_tree_generator() {
 	devs := cuda.GetDevices()
 	maj, min := cuda.GetNVRTCVersion()
 	// Be verbose on GPU being used
-	fmt.Println("CUDA Driver Version:", cuda.GetVersion())
-	fmt.Println("NVRTC Version:", maj, min)
-	fmt.Println("CUDA Num devices:", cuda.GetDevicesCount())
-	fmt.Println("Compute devices")
+	log.Println("CUDA Driver Version:", cuda.GetVersion())
+	log.Println("NVRTC Version:", maj, min)
+	log.Println("CUDA Num devices:", cuda.GetDevicesCount())
+	log.Println("Compute devices")
 	for i, d := range devs {
-		fmt.Printf("Device %d: %s %v bytes of memory\n", i, d.Name, d.TotalMem)
+		log.Printf("Device %d: %s %v bytes of memory\n", i, d.Name, d.TotalMem)
 		mbx, mby, mbz := d.GetMaxBlockDim()
-		fmt.Println("Max block size:", mbx, mby, mbz)
+		log.Println("Max block size:", mbx, mby, mbz)
 		mgx, mgy, mgz := d.GetMaxGridDim()
-		fmt.Println("Max grid size:", mgx, mgy, mgz)
+		log.Println("Max grid size:", mgx, mgy, mgz)
 	}
 	// Create context and make it current
 	ctx := cuda.Create(devs[0], 0)
 	defer ctx.Destroy() // When done
-	fmt.Println("Context API version:", ctx.GetApiVersion())
+	log.Println("Context API version:", ctx.GetApiVersion())
 	ctx.Synchronize() // Check for errors
-	fmt.Println("CUDA initialized successfully")
+	log.Println("CUDA initialized successfully")
 
 	// Prepare grid dimensions
 	tpb := 256 // TODO Get this from attr
 	bpg := (nrow + nrow_test + tpb - 1) / tpb
 
-	fmt.Println("CUDA Threads Per Block", tpb)
-	fmt.Println("CUDA Blocks Per Grid", bpg)
+	log.Println("CUDA Threads Per Block", tpb)
+	log.Println("CUDA Blocks Per Grid", bpg)
 
 	// Allocate memory for GPU computation
 	var (
-		len_ds         = C.size_t(nrow + nrow_test)                                             // Length of dataset
-		num_vars       = C.size_t(nvar + 1)                                                     // Number of variables
-		cpu_out        = make([]cFloat64, nrow+nrow_test)                                       // Storage for semantic
-		cpu_set        = make([]cFloat64, (nrow+nrow_test)*(nvar+1))                            // Temporary storage for dataset
-		gpu_set        = cuda.NewBuffer(int(C.sizeof_double * len_ds * num_vars))               // Storage for dataset
-		cpu_sym_val    = make([]cFloat64, len(symbols))                                         // Temporary storage for symbols
-		gpu_sym_val    = cuda.NewBuffer(C.sizeof_double * len(symbols))                         // Storage for symbols
-		gpu_tree_arr   = cuda.NewBuffer(C.sizeof_int * (2 << uint(*config.max_depth_creation))) // Storage for generated trees
-		num_evals      = tpb * int(math.Ceil(float64(nrow+nrow_test)/float64(tpb)))             // Align dataset size to threads in block
-		gpu_out_evals  = cuda.NewBuffer(C.sizeof_double * num_evals)                            // Output of semantic evaluation
-		gpu_out_reduce = cuda.NewBuffer(C.sizeof_double * bpg)                                  // Output for reduction (for fitness)
-		out_reduce     = make([]cFloat64, bpg)                                                  // CPU output for reduction
+		len_ds         = C.size_t(nrow + nrow_test)                                               // Length of dataset
+		num_vars       = C.size_t(nvar + 1)                                                       // Number of variables
+		cpu_out        = make([]cFloat64, nrow+nrow_test)                                         // Storage for semantic
+		cpu_set        = make([]cFloat64, (nrow+nrow_test)*(nvar+1))                              // Temporary storage for dataset
+		gpu_set        = cuda.NewBuffer(int(C.sizeof_double * len_ds * num_vars))                 // Storage for dataset
+		cpu_sym_val    = make([]cFloat64, len(symbols))                                           // Temporary storage for symbols
+		gpu_sym_val    = cuda.NewBuffer(C.sizeof_double * len(symbols))                           // Storage for symbols
+		gpu_tree_arr   = cuda.NewBuffer(C.sizeof_int * (2 << uint(*config.max_depth_creation+1))) // Storage for generated trees
+		num_evals      = tpb * int(math.Ceil(float64(nrow+nrow_test)/float64(tpb)))               // Align dataset size to threads in block
+		gpu_out_evals  = cuda.NewBuffer(C.sizeof_double * num_evals)                              // Output of semantic evaluation
+		gpu_out_reduce = cuda.NewBuffer(C.sizeof_double * bpg)                                    // Output for reduction (for fitness)
+		out_reduce     = make([]cFloat64, bpg)                                                    // CPU output for reduction
 	)
 	// Copy datasets, including target which is used to compute fitness
 	for i := 0; i < nrow+nrow_test; i++ {
@@ -1136,7 +1136,7 @@ func main() {
 	for num_gen := 0; num_gen < *config.max_number_generations; num_gen++ {
 		var gen_start = time.Now()
 
-		fmt.Println("Generation", num_gen+1)
+		log.Println("Generation", num_gen+1)
 		for k := 0; k < *config.population_size; k++ {
 			rand_num := rand.Float64()
 			switch {
@@ -1159,5 +1159,5 @@ func main() {
 		elapsedTime += time.Since(gen_start) / time.Millisecond
 		fmt.Fprintln(executiontime, elapsedTime)
 	}
-	fmt.Println("Total elapsed time since start:", time.Since(start))
+	log.Println("Total elapsed time since start:", time.Since(start))
 }

@@ -1,14 +1,8 @@
 extern "C" __device__
-double get_var(double *set, int var, int row) {
-	return set[row * (NUM_VARIABLE_SYMBOLS + 1) + var];
-}
-
-extern "C" __device__
 double eval_arrays(double *sym, double *set, int *tree, int start, int i) {
 	int id = tree[start];
 	if (id < NUM_FUNCTIONAL_SYMBOLS) {
 		switch (id) {
-		// These IDs are hard-coded as in create_T_F()
 			case 0: {
 				double v1 = eval_arrays(sym, set, tree, tree[start+1], i);
 				double v2 = eval_arrays(sym, set, tree, tree[start+2], i);
@@ -42,7 +36,7 @@ double eval_arrays(double *sym, double *set, int *tree, int start, int i) {
 		}
 	}
 	if (id >= NUM_FUNCTIONAL_SYMBOLS && id < NUM_FUNCTIONAL_SYMBOLS + NUM_VARIABLE_SYMBOLS) {
-		return get_var(set, id - NUM_FUNCTIONAL_SYMBOLS, i);
+		return set[i * (NUM_VARIABLE_SYMBOLS + 1) + (id - NUM_FUNCTIONAL_SYMBOLS)];
 	}
 	if (id >= NUM_FUNCTIONAL_SYMBOLS+NUM_VARIABLE_SYMBOLS) {
 		return sym[id];
