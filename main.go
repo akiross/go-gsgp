@@ -158,7 +158,7 @@ var (
 
 	index_best cInt // Index of the best individual (where? sem_*?)
 
-	semchan chan Semantic // Channel to move semantics fromm device to host
+	semchan  chan Semantic // Channel to move semantics fromm device to host
 )
 
 func init() {
@@ -1051,8 +1051,8 @@ func cuda_tree_generator() {
 		}
 		// Copy semantic back to host
 		gpu_out_evals.FromDeviceN(unsafe.Pointer(&cpu_out[0]), len(cpu_out)*C.sizeof_double)
-		// Send semantic on channel to beused
-		semchan <- cpu_out
+		// Send a copy of the semantic on channel
+		semchan <- append([]cFloat64{}, cpu_out...)
 	}
 }
 
