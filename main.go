@@ -78,6 +78,7 @@ type Config struct {
 	use_cuda               *bool    // Flag that enables CUDA computation
 	of_train, of_test      *string  // Paths for output fitness files
 	of_timing              *string  // Path for file with timings
+	error_measure          *string  // Error measure to use for fitness
 }
 
 // Symbol represents a symbol of the set T (terminal symbols) or F (functional symbols).
@@ -132,6 +133,7 @@ var (
 		of_train:               flag.String("out_file_train_fitness", "fitnesstrain.txt", "Path for the output file with train fitness data"),
 		of_test:                flag.String("out_file_test_fitness", "fitnesstest.txt", "Path for the output file with test fitness data"),
 		of_timing:              flag.String("out_file_exec_timing", "execution_time.txt", "Path for the output file containing timings"),
+		error_measure:          flag.String("error_measure", "MSE", "Error measures to use for fitness (MSE, MAE or MRE)"),
 	}
 	cpuprofile = flag.String("cpuprofile", "", "Write CPU profile to file")
 
@@ -165,6 +167,8 @@ var (
 	index_best cInt // Index of the best individual (where? sem_*?)
 
 	semchan chan Semantic // Channel to move semantics fromm device to host
+
+	dist_func func(cFloat64, cFloat64) cFloat64 // Distance function to use for fitness
 )
 
 // Define a sink type that works like /dev/null
@@ -179,7 +183,9 @@ func init() {
 	read_config_file(*config_file)
 }
 
-func square_diff(a, b cFloat64) cFloat64 { return (a - b) * (a - b) }
+func square_diff(a, b cFloat64) cFloat64  { return (a - b) * (a - b) }
+func abs_diff(a, b cFloat64) cFloat64     { return cFloat64(math.Abs(float64(a - b))) }
+func rel_abs_diff(a, b cFloat64) cFloat64 { return cFloat64(math.Abs(float64(a-b))) / a }
 
 func atoi(s string) int {
 	v, err := strconv.Atoi(s)
@@ -245,6 +251,8 @@ func read_config_file(path string) {
 			*config.of_test = fields[1]
 		case "out_file_exec_timing":
 			*config.of_timing = fields[1]
+		case "error_measure":
+			*config.error_measure = fields[1]
 		default:
 			println("Read unknown parameter: ", fields[0])
 		}
@@ -727,7 +735,7 @@ func semantic_evaluate(el *Node, sem_size, sem_offs cInt) (cFloat64, Semantic) {
 		for i := sem_offs; i < sem_offs+sem_size; i++ {
 			res := eval(el, i)
 			val[i-sem_offs] = res
-			d += square_diff(res, set[i].y_value)
+			d += dist_func(set[i].y_value, res)
 		}
 	} else {
 		// Communication channel
@@ -741,7 +749,7 @@ func semantic_evaluate(el *Node, sem_size, sem_offs cInt) (cFloat64, Semantic) {
 				for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
 					res := eval(el, i)
 					val[i-sem_offs] = res
-					wd += square_diff(res, set[i].y_value)
+					wd += dist_func(set[i].y_value, res)
 				}
 				ch <- wd // Send partial results
 			}(w)
@@ -861,7 +869,7 @@ func geometric_semantic_mutation(i cInt) {
 func fitness_of_semantic(sem Semantic, sem_size, sem_offs cInt) cFloat64 {
 	var d cFloat64
 	for j := sem_offs; j < sem_offs+sem_size; j++ {
-		d += square_diff(sem[j-sem_offs], set[j].y_value)
+		d += dist_func(set[j].y_value, sem[j-sem_offs])
 	}
 	return d / cFloat64(sem_size)
 }
@@ -1097,6 +1105,17 @@ func main() {
 
 	if *config.use_goroutines {
 		log.Println("Using goroutines with", runtime.NumCPU(), "CPUs")
+	}
+
+	switch strings.ToUpper(*config.error_measure) {
+	case "MAE":
+		dist_func = abs_diff
+	case "MRE":
+		dist_func = rel_abs_diff
+	case "MSE":
+		dist_func = square_diff
+	default:
+		panic("Unknown error measure: " + *config.error_measure)
 	}
 
 	if *cpuprofile != "" {
