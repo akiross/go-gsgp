@@ -30,6 +30,7 @@ import (
 	"flag"
 	"fmt"
 	cuda "github.com/akiross/go-cudart"
+	"io"
 	"io/ioutil"
 	"log"
 	"math"
@@ -71,10 +72,12 @@ type Config struct {
 	min_random_constant    *float64 // Minimum possible value for a random constant
 	max_random_constant    *float64 // Maximum possible value for a random constant
 	minimization_problem   *bool    // True if we are minimizing, false if maximizing
-	path_in, path_test     *string
-	rng_seed               *int64
-	use_goroutines         *bool
-	use_cuda               *bool
+	path_in, path_test     *string  // Paths for input data files
+	rng_seed               *int64   // Seed for random numbers
+	use_goroutines         *bool    // Flag that enables concurrent computation
+	use_cuda               *bool    // Flag that enables CUDA computation
+	of_train, of_test      *string  // Paths for output fitness files
+	of_timing              *string  // Path for file with timings
 }
 
 // Symbol represents a symbol of the set T (terminal symbols) or F (functional symbols).
@@ -126,6 +129,9 @@ var (
 		rng_seed:               flag.Int64("seed", time.Now().UnixNano(), "Specify a seed for the RNG (uses time by default)"),
 		use_goroutines:         flag.Bool("use_goroutines", false, "Enable goroutines in evaluation of fitness"),
 		use_cuda:               flag.Bool("use_cuda", false, "Enable CUDA in generation of random trees"),
+		of_train:               flag.String("out_file_train_fitness", "fitnesstrain.txt", "Path for the output file with train fitness data"),
+		of_test:                flag.String("out_file_test_fitness", "fitnesstest.txt", "Path for the output file with test fitness data"),
+		of_timing:              flag.String("out_file_exec_timing", "execution_time.txt", "Path for the output file containing timings"),
 	}
 	cpuprofile = flag.String("cpuprofile", "", "Write CPU profile to file")
 
@@ -158,8 +164,14 @@ var (
 
 	index_best cInt // Index of the best individual (where? sem_*?)
 
-	semchan  chan Semantic // Channel to move semantics fromm device to host
+	semchan chan Semantic // Channel to move semantics fromm device to host
 )
+
+// Define a sink type that works like /dev/null
+type sink int
+
+func (s sink) Close() error                { return nil }
+func (s sink) Write(p []byte) (int, error) { return len(p), nil }
 
 func init() {
 	// Reading the config here allows to use a different config file path, as init is executed after variables initialization
@@ -227,6 +239,12 @@ func read_config_file(path string) {
 			*config.path_in = fields[1]
 		case "test_file":
 			*config.path_test = fields[1]
+		case "out_file_train_fitness":
+			*config.of_train = fields[1]
+		case "out_file_test_fitness":
+			*config.of_test = fields[1]
+		case "out_file_exec_timing":
+			*config.of_timing = fields[1]
 		default:
 			println("Read unknown parameter: ", fields[0])
 		}
@@ -894,9 +912,15 @@ func node_count(el *Node) cInt {
 }
 
 // Create file or panic if an error occurs
-func create_or_panic(path string) *os.File {
+// If path is empty, will return a sink
+func create_or_panic(path string) io.WriteCloser {
+	if path == "" {
+		return sink(0)
+	}
+
 	f, err := os.Create(path)
 	if err != nil {
+		//f = ioutil.Discard
 		panic(err)
 	}
 	return f
@@ -1094,11 +1118,11 @@ func main() {
 	}
 
 	// Create some files for output data
-	executiontime := create_or_panic("execution_time.txt")
+	executiontime := create_or_panic(*config.of_timing)
 	defer executiontime.Close()
-	fitness_train := create_or_panic("fitnesstrain.txt")
+	fitness_train := create_or_panic(*config.of_train)
 	defer fitness_train.Close()
-	fitness_test := create_or_panic("fitnesstest.txt")
+	fitness_test := create_or_panic(*config.of_test)
 	defer fitness_test.Close()
 
 	// Tracking time
