@@ -29,59 +29,19 @@ Where, the first line contains the number `n` of variables, the second line
 contains the number `m` of cases in the dataset. Then, follow `m` lines of
 `n+1` space-separated columns, where the last column is the target value.
 
-# Custom initialization
+# Initialization via semantic feeding
 
-It is possible to initialize the population by running external commands.
-This is done by providing the `-models` flag and then specifying the commands
-to run as final arguments of the command. The commands will be executed and
-their outputs captured to build individuals.
+Instead of randomly generating all the initial individuals, and computing
+their semantic, it is possible to feed some pre-computed semantics via files.
 
-For example, given an `enode_individual` command:
+To do so, provide a list of files as positional arguments to the program:
 
-    $ encode_individual x0+4*x1
-	(+ x0 (* x1 4))
+    $ go-gsgp [options] semantic1 semantic2 ... semanticN
 
-the following command
+The files consist in a semantic vector formatted as follow:
 
-	$ go-gsgp -models 'encode_individual x0+4*x1' 'encode_individual 3*x1'
+    (sem v1 v2 ... vN)
 
-will run go-gsgp using the configuration.ini (if present) file and the first
-two individuals will be initialized using the outputs from the commands
-
-	encode_individual x0+4*x1
-	encode_individual 3*x1
-
-For correct initialization, the custom commands shall return a s-expression
-for each individual on separated lines. For example:
-
-    encode_individual x0+4*x1 3*x1
-	(+ x0 (* 4 x1))
-	(* 3 x1)
-
-is a valid output, while
-
-    encode_individual x0+4*x1 3*x1
-	(+ x0 (* 4 x1)) (* 3 x1)
-
-is not valid.
-
-Examples of valid s-expressions:
-
-	3.14                      // a real number
-	x4                        // the 5th input variable (x0 is the first)
-	(+ 3.14 x4)               // representing the sum x4+3.14
-	(- (+ 3.14 0.0015) x4)    // representing 3.1415 - x4
-
-Valid functionals are currently +, -, *, / (protected) and sqrt (1-ary).
-
-It is possible to optionally pass the path of the training and test data
-files to the command by using the pattern `{train}` and `{test}` in the
-command specification. For example:
-
-    $ go-gsgp -models `echo {train} {test}` -train_file foo -test_file bar
-
-will call `echo foo bar` and capture its output.
-
-Only stdout is read from the command: stdin and stderr are ignored. Therefore
-if the program has to output messages on stderr, it has to use a log file.
+Where `vi` are the semantic values corresponding to each row in the dataset.
+The train values are concatenated to test values.
 
