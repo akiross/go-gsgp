@@ -182,7 +182,11 @@ func (s sink) Write(p []byte) (int, error) { return len(p), nil }
 func init() {
 	// Reading the config here allows to use a different config file path, as init is executed after variables initialization
 	// Read variables: if present in the config, they will override the defaults
-	read_config_file(*config_file)
+	if _, err := os.Stat(*config_file); os.IsNotExist(err) {
+		log.Println("Configuration file", *config_file, "does not exists, using defaults")
+	} else {
+		read_config_file(*config_file)
+	}
 }
 
 func square_diff(a, b cFloat64) cFloat64  { return (a - b) * (a - b) }
