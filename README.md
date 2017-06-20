@@ -9,6 +9,14 @@ This version is compatible with the version 1.0 and features:
  - better reading of configuration files;
  - better handing of command line arguments.
 
+# Building
+
+To include git version number, compile using:
+
+    go build -ldflags "-X main.gitCommit=`git describe --long --dirty --tags --always`"
+
+The commit will show up when running with `-version` flag.
+
 # Usage
 
     go get github.com/akiross/go-gsgp

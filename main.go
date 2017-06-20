@@ -108,6 +108,7 @@ type Population struct {
 type Semantic []cFloat64
 
 var (
+	gitCommit string // This will be filled at link-time
 	// Create flag/configuration variables with default values (in case config file is missing)
 	config_file = flag.String("config", "configuration.ini", "Path of the configuration file")
 	// Config is initially filled with default values, before init() is executed
@@ -135,7 +136,8 @@ var (
 		of_timing:              flag.String("out_file_exec_timing", "execution_time.txt", "Path for the output file containing timings"),
 		error_measure:          flag.String("error_measure", "MSE", "Error measures to use for fitness (MSE, MAE or MRE)"),
 	}
-	cpuprofile = flag.String("cpuprofile", "", "Write CPU profile to file")
+	cpuprofile  = flag.String("cpuprofile", "", "Write CPU profile to file")
+	showVersion = flag.Bool("version", false, "Show version")
 
 	NUM_FUNCTIONAL_SYMBOLS cInt // Number of functional symbols
 	NUM_VARIABLE_SYMBOLS   cInt // Number of terminal symbols for variables
@@ -1091,6 +1093,15 @@ func cuda_tree_generator() {
 func main() {
 	// Parse CLI arguments: if they are set, they will override defaults and config file
 	flag.Parse()
+	// If required, show version and exit
+	if *showVersion {
+		if gitCommit != "" {
+			fmt.Println(gitCommit)
+		} else {
+			fmt.Println("Compiled without version info")
+		}
+		return
+	}
 	// After config is read and flags are parsed
 	NUM_CONSTANT_SYMBOLS = cInt(*config.num_random_constants)
 
