@@ -46,10 +46,6 @@ To do so, provide a list of files as positional arguments to the program:
 
     $ go-gsgp [options] semantic1 semantic2 ... semanticN
 
-The files consist in a semantic vector formatted as follow:
-
-    (sem v1 v2 ... vN)
-
-Where `vi` are the semantic values corresponding to each row in the dataset.
-The train values are concatenated to test values.
+The files consist in a semantic vector with one value per line. The file shall
+contain the semantic values for the training set followed by the test values.
 
