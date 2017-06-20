@@ -1187,13 +1187,10 @@ func main() {
 	fmt.Fprintln(fitness_train, fit[index_best])
 	fmt.Fprintln(fitness_test, fit_test[index_best])
 
-	elapsedTime := time.Since(start) / time.Millisecond
-	fmt.Fprintln(executiontime, elapsedTime)
+	fmt.Fprintln(executiontime, time.Since(start))
 
 	// main GP cycle
 	for num_gen := 0; num_gen < *config.max_number_generations; num_gen++ {
-		var gen_start = time.Now()
-
 		log.Println("Generation", num_gen+1)
 		for k := 0; k < *config.population_size; k++ {
 			rand_num := rand.Float64()
@@ -1214,9 +1211,7 @@ func main() {
 		fmt.Fprintln(fitness_train, fit[index_best])
 		fmt.Fprintln(fitness_test, fit_test[index_best])
 
-		elapsedTime += time.Since(gen_start) / time.Millisecond
-		fmt.Fprintln(executiontime, elapsedTime)
+		fmt.Fprintln(executiontime, time.Since(start))
 	}
-	fmt.Fprintln(executiontime, time.Since(start)/time.Millisecond)
 	log.Println("Total elapsed time since start:", time.Since(start))
 }
