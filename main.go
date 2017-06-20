@@ -1217,5 +1217,6 @@ func main() {
 		elapsedTime += time.Since(gen_start) / time.Millisecond
 		fmt.Fprintln(executiontime, elapsedTime)
 	}
+	fmt.Fprintln(executiontime, time.Since(start)/time.Millisecond)
 	log.Println("Total elapsed time since start:", time.Since(start))
 }
