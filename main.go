@@ -1057,8 +1057,8 @@ func cuda_tree_generator() {
 
 	// Prepare kernels to eval and reduce trees
 	mod := cuda.CreateModule()
-	prog := cuda.CreateProgram(cuda.Source{kernel_src, "semantic_eval_arrays"}, nil)
-	prog.Compile(nil)
+	prog := cuda.CreateProgram(cuda.Source{kernel_src, "semantic_eval_arrays"})
+	prog.Compile()
 	mod.LoadData(prog)
 	// Kernels being used
 	cuda_sem_eval := mod.GetFunction("semantic_eval_arrays")
