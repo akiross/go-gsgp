@@ -169,8 +169,49 @@ var (
 	index_best cInt // Index of the best individual (where? sem_*?)
 
 	semchan chan Semantic // Channel to move semantics fromm device to host
+	cmdchan chan int      // Channel where commands are sent
 
 	dist_func func(cFloat64, cFloat64) cFloat64 // Distance function to use for fitness
+
+	ctx *cuda.Context
+
+	cu_tpb     int = 256
+	cu_bgp_ds  int
+	cu_bpg_pop int
+
+	cu_prog         *cuda.Program
+	cu_mod          *cuda.Module
+	kern_eval_array *cuda.Function
+	kern_crossover  *cuda.Function
+	kern_fitness    *cuda.Function
+	kern_mutation   *cuda.Function
+
+	cu_set                 *cuda.Buffer
+	cu_sym_val             *cuda.Buffer
+	cu_fit                 *cuda.Buffer
+	cu_fit_test            *cuda.Buffer
+	cu_fit_new             *cuda.Buffer
+	cu_fit_test_new        *cuda.Buffer
+	cu_sem_train_cases     []*cuda.Buffer
+	cu_sem_train_cases_new []*cuda.Buffer
+	cu_sem_test_cases      []*cuda.Buffer
+	cu_sem_test_cases_new  []*cuda.Buffer
+
+	// Temporary memory
+	cu_tmp_tree_arr1                  *cuda.Buffer
+	cu_tmp_tree_arr2                  *cuda.Buffer
+	cu_tmp_sem_train, cu_tmp_sem_test *cuda.Buffer
+	cu_tmp_sem_tot1                   *cuda.Buffer
+	cu_tmp_sem_tot2                   *cuda.Buffer
+
+	cu_tmp_d1, cu_tmp_d2        *cuda.Buffer
+	tmp_sem_train, tmp_sem_test []cFloat64
+)
+
+const (
+	CMD_REPRODUCE = iota
+	CMD_MUTATE
+	CMD_CROSSOVER
 )
 
 // Define a sink type that works like /dev/null
@@ -178,6 +219,50 @@ type sink int
 
 func (s sink) Close() error                { return nil }
 func (s sink) Write(p []byte) (int, error) { return len(p), nil }
+
+// Simple tool for benchmarking a section of code
+type Benchmark struct {
+	start time.Time
+	durat time.Duration
+	count int
+}
+
+var benchmarks map[string]*Benchmark
+
+func StartBenchmark(name string) *Benchmark {
+	if benchmarks == nil {
+		benchmarks = make(map[string]*Benchmark)
+	}
+	var bmk Benchmark
+	benchmarks[name] = &bmk
+	defer bmk.Start()
+	return &bmk
+}
+
+func (b *Benchmark) Start() {
+	b.start = time.Now()
+}
+
+func (b *Benchmark) Measure() {
+	b.durat += time.Since(b.start)
+	b.count++
+}
+
+func (b *Benchmark) Average() time.Duration {
+	if b.count == 0 {
+		return -1
+	}
+	return time.Duration(int64(b.durat) / int64(b.count))
+}
+
+func BenchResult(name string) time.Duration {
+	val, ok := benchmarks[name]
+	if ok {
+		return val.Average()
+	} else {
+		return -1
+	}
+}
 
 func init() {
 	// Reading the config here allows to use a different config file path, as init is executed after variables initialization
@@ -220,6 +305,11 @@ func read_config_file(path string) {
 	for input.Scan() {
 		fields := strings.Split(input.Text(), "=")
 		fields[0], fields[1] = strings.TrimSpace(fields[0]), strings.TrimSpace(fields[1])
+		// Skip comments
+		if strings.HasPrefix(fields[0], "#") {
+			continue
+		}
+		// Parse options
 		switch strings.ToLower(fields[0]) {
 		case "population_size":
 			*config.population_size = atoi(fields[1])
@@ -768,18 +858,55 @@ func semantic_evaluate(el *Node, sem_size, sem_offs cInt) (cFloat64, Semantic) {
 	return d, val
 }
 
+func semantic_evaluate_array(tree *[]cInt, sem_size, sem_offs cInt) (cFloat64, Semantic) {
+	var d cFloat64
+	val := make(Semantic, sem_size)
+	if !*config.use_goroutines {
+		for i := sem_offs; i < sem_offs+sem_size; i++ {
+			res := eval_arrays(*tree, 0, i)
+			val[i-sem_offs] = res
+			d += dist_func(set[i].y_value, res)
+		}
+	}
+	d = d / cFloat64(nrow_test)
+	return d, val
+}
+
 func random_tree_semantics() (Semantic, Semantic) {
+	bmk := StartBenchmark("random_tree")
+	defer bmk.Measure()
+
+	// Use same array for riproducible results
+	rt := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
+
 	if !*config.use_cuda {
 		// Generate a random tree and compute its semantic (train and test)
-		rt := create_grow_tree(0, nil, cInt(*config.max_depth_creation))
-		_, sem_train := semantic_evaluate(rt, cInt(nrow), 0)
-		_, sem_test := semantic_evaluate(rt, cInt(nrow_test), cInt(nrow))
+		//	rt := create_grow_tree(0, nil, cInt(*config.max_depth_creation))
+		//_, sem_train := semantic_evaluate(rt, cInt(nrow), 0)
+		//_, sem_test := semantic_evaluate(rt, cInt(nrow_test), cInt(nrow))
+		_, sem_train := semantic_evaluate_array(&rt, cInt(nrow), 0)
+		_, sem_test := semantic_evaluate_array(&rt, cInt(nrow_test), cInt(nrow))
+
 		return sem_train, sem_test
 	} else {
-		// Get semantic from GPU
-		sem := <-semchan
-		// Split into train and test semantics
-		sem_train, sem_test := sem[:nrow], sem[nrow:]
+		// Create a tree and copy it to unified memory
+		//		rt := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
+		cu_tmp_tree_arr1.FromHostN(unsafe.Pointer(&rt[0]), C.sizeof_int*len(rt))
+
+		// Evaluate the tree on GPU
+		kern_eval_array.Launch1D(
+			cu_bgp_ds,        // Number of blocks for dataset
+			cu_tpb,           // Number of threads per block is fixed
+			0,                // No shared memory needed
+			cu_sym_val,       // Value for symbols
+			cu_set,           // Dataset
+			cu_tmp_tree_arr1, // Tree to evaluate
+			cu_tmp_sem_tot1)  // Output, semantic for whole dataset
+
+		// Copy back the results and return
+		sem_tot := make([]cFloat64, nrow+nrow_test)
+		cu_tmp_sem_tot1.FromDevice(unsafe.Pointer(&sem_tot[0]))
+		sem_train, sem_test := sem_tot[:nrow], sem_tot[nrow:]
 		return sem_train, sem_test
 	}
 }
@@ -817,54 +944,137 @@ func reproduction(i cInt) {
 
 // Performs a geometric semantic crossover
 func geometric_semantic_crossover(i cInt) {
-	if i != index_best {
-		// Replace the individual with the crossover of two parents
-		p1 := tournament_selection()
-		p2 := tournament_selection()
-		// Generate a random tree and compute its semantic (train and test)
-		sem_rt, sem_rt_test := random_tree_semantics()
-		// Compute the geometric semantic (train)
-		for j := 0; j < nrow; j++ {
-			sigmoid := 1 / (1 + exp64(-sem_rt[j]))
-			sem_train_cases_new[i][j] = sem_train_cases[p1][j]*sigmoid + sem_train_cases[p2][j]*(1-sigmoid)
+	bmk := StartBenchmark("crossover")
+	defer bmk.Measure()
+
+	if !*config.use_cuda {
+		if i != index_best {
+			// Replace the individual with the crossover of two parents
+			p1 := tournament_selection()
+			p2 := tournament_selection()
+			// Generate a random tree and compute its semantic (train and test)
+			sem_rt, sem_rt_test := random_tree_semantics()
+			// Compute the geometric semantic (train)
+			for j := 0; j < nrow; j++ {
+				sigmoid := 1 / (1 + exp64(-sem_rt[j]))
+				sem_train_cases_new[i][j] = sem_train_cases[p1][j]*sigmoid + sem_train_cases[p2][j]*(1-sigmoid)
+			}
+			fit_new[i] = fitness_of_semantic(sem_train_cases_new[i], cInt(nrow), 0)
+			// Compute the geometric semantic (test)
+			for j := 0; j < nrow_test; j++ {
+				sigmoid := 1 / (1 + exp64(-sem_rt_test[j]))
+				sem_test_cases_new[i][j] = sem_test_cases[p1][j]*sigmoid + sem_test_cases[p2][j]*(1-sigmoid)
+			}
+			fit_test_new[i] = fitness_of_semantic(sem_test_cases_new[i], cInt(nrow_test), cInt(nrow))
+		} else {
+			// The best individual will not be changed
+			copy(sem_train_cases_new[i], sem_train_cases[i])
+			copy(sem_test_cases_new[i], sem_test_cases[i])
+			fit_new[i] = fit[i]
+			fit_test_new[i] = fit_test[i]
 		}
-		fit_new[i] = fitness_of_semantic(sem_train_cases_new[i], cInt(nrow), 0)
-		// Compute the geometric semantic (test)
-		for j := 0; j < nrow_test; j++ {
-			sigmoid := 1 / (1 + exp64(-sem_rt_test[j]))
-			sem_test_cases_new[i][j] = sem_test_cases[p1][j]*sigmoid + sem_test_cases[p2][j]*(1-sigmoid)
-		}
-		fit_test_new[i] = fitness_of_semantic(sem_test_cases_new[i], cInt(nrow_test), cInt(nrow))
 	} else {
-		// The best individual will not be changed
-		copy(sem_train_cases_new[i], sem_train_cases[i])
-		copy(sem_test_cases_new[i], sem_test_cases[i])
-		fit_new[i] = fit[i]
-		fit_test_new[i] = fit_test[i]
+		if i != index_best {
+			// Replace the individual with the crossover of two parents
+			p1 := tournament_selection()
+			p2 := tournament_selection()
+
+			// Generate a random tree and compute its semantic (train and test)
+			// TODO the tree used here and the one above are different when
+			// executing on CPU or GPU. This difference could be removed by using
+			// create_grow_tree_arrays in both cases
+
+			// Create a tree and copy it to unified memory
+			rt := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
+			cu_tmp_tree_arr1.FromHostN(unsafe.Pointer(&rt[0]), C.sizeof_int*len(rt))
+
+			// Evaluate the tree on GPU
+			kern_eval_array.Launch1D(
+				cu_bgp_ds,        // Number of blocks for dataset
+				cu_tpb,           // Number of threads per block is fixed
+				0,                // No shared memory needed
+				cu_sym_val,       // Value for symbols
+				cu_set,           // Dataset
+				cu_tmp_tree_arr1, // Tree to evaluate
+				cu_tmp_sem_tot1)  // Output, semantic for whole dataset
+
+			// Run kernel that perform crossover
+			kern_crossover.Launch1D(
+				cu_bgp_ds,
+				cu_tpb,
+				0,
+				cu_tmp_sem_tot1,           // Semantic to use
+				cu_sem_train_cases[p1],    // Old train semantic of first parent
+				cu_sem_test_cases[p1],     // Old test semantic of first parent
+				cu_sem_train_cases[p2],    // Old train semantic of second parent
+				cu_sem_test_cases[p2],     // Old test semantic of second parent
+				cu_sem_train_cases_new[i], // Destination for new train sem
+				cu_sem_test_cases_new[i],  // Destination for new test sem
+			)
+
+			// Evaluate fitness
+			kern_fitness.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_train_cases_new[i], cu_sem_test_cases_new[i], cu_tmp_d1, cu_tmp_d2)
+
+			ctx.Synchronize()
+
+			fit_new[i] = cFloat64(cu_tmp_d1.ToFloat64())
+			fit_test_new[i] = cFloat64(cu_tmp_d2.ToFloat64())
+		} else {
+			// The best individual will not be changed
+			copy(sem_train_cases_new[i], sem_train_cases[i])
+			copy(sem_test_cases_new[i], sem_test_cases[i])
+			fit_new[i] = fit[i]
+			fit_test_new[i] = fit_test[i]
+		}
 	}
 }
 
 // Performs a geometric semantic mutation
 func geometric_semantic_mutation(i cInt) {
+	bmk := StartBenchmark("mutation")
+	defer bmk.Measure()
+
 	if i != index_best {
-		// Replace the individual with a mutated version
-		sem_rt1, sem_rt1_test := random_tree_semantics()
-		sem_rt2, sem_rt2_test := random_tree_semantics()
+		if !*config.use_cuda {
+			// Replace the individual with a mutated version
+			sem_rt1, sem_rt1_test := random_tree_semantics()
+			sem_rt2, sem_rt2_test := random_tree_semantics()
 
-		mut_step := cFloat64(rand.Float64())
+			mut_step := cFloat64(rand.Float64())
 
-		for j := 0; j < nrow; j++ {
-			sigmoid1 := 1 / (1 + exp64(-sem_rt1[j]))
-			sigmoid2 := 1 / (1 + exp64(-sem_rt2[j]))
-			sem_train_cases_new[i][j] += mut_step * (sigmoid1 - sigmoid2)
+			for j := 0; j < nrow; j++ {
+				sigmoid1 := 1 / (1 + exp64(-sem_rt1[j]))
+				sigmoid2 := 1 / (1 + exp64(-sem_rt2[j]))
+				sem_train_cases_new[i][j] += mut_step * (sigmoid1 - sigmoid2)
+			}
+			fit_new[i] = fitness_of_semantic(sem_train_cases_new[i], cInt(nrow), 0)
+			for j := 0; j < nrow_test; j++ {
+				sigmoid1 := 1 / (1 + exp64(-sem_rt1_test[j]))
+				sigmoid2 := 1 / (1 + exp64(-sem_rt2_test[j]))
+				sem_test_cases_new[i][j] += mut_step * (sigmoid1 - sigmoid2)
+			}
+			fit_test_new[i] = fitness_of_semantic(sem_test_cases_new[i], cInt(nrow_test), cInt(nrow))
+		} else {
+			// Create two random trees and copy it to unified memory
+			rt1 := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
+			rt2 := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
+			// Copy trees to GPU
+			cu_tmp_tree_arr1.FromHostN(unsafe.Pointer(&rt1[0]), C.sizeof_int*len(rt1))
+			cu_tmp_tree_arr2.FromHostN(unsafe.Pointer(&rt2[0]), C.sizeof_int*len(rt2))
+			// Evaluate the tree on GPU
+			kern_eval_array.Launch1D(cu_bgp_ds, cu_tpb, 0, cu_sym_val, cu_set, cu_tmp_tree_arr1, cu_tmp_sem_tot1)
+			kern_eval_array.Launch1D(cu_bgp_ds, cu_tpb, 0, cu_sym_val, cu_set, cu_tmp_tree_arr2, cu_tmp_sem_tot2)
+			// Copy mut step to GPU
+			cu_tmp_d1.FromFloat64(rand.Float64())
+			// Run kernel that perform mutation
+			kern_mutation.Launch1D(cu_bgp_ds, cu_tpb, 0, cu_tmp_sem_tot1, cu_tmp_sem_tot2, cu_tmp_d1, cu_sem_train_cases_new[i], cu_sem_test_cases_new[i])
+			// Evaluate fitness
+			kern_fitness.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_train_cases_new[i], cu_sem_test_cases_new[i], cu_tmp_d1, cu_tmp_d2)
+			// Copy back results
+			ctx.Synchronize()
+			fit_new[i] = cFloat64(cu_tmp_d1.ToFloat64())
+			fit_test_new[i] = cFloat64(cu_tmp_d2.ToFloat64())
 		}
-		fit_new[i] = fitness_of_semantic(sem_train_cases_new[i], cInt(nrow), 0)
-		for j := 0; j < nrow_test; j++ {
-			sigmoid1 := 1 / (1 + exp64(-sem_rt1_test[j]))
-			sigmoid2 := 1 / (1 + exp64(-sem_rt2_test[j]))
-			sem_test_cases_new[i][j] += mut_step * (sigmoid1 - sigmoid2)
-		}
-		fit_test_new[i] = fitness_of_semantic(sem_test_cases_new[i], cInt(nrow_test), cInt(nrow))
 	}
 	// Mutation happens after reproduction: elite are reproduced but are not mutated
 }
@@ -897,6 +1107,13 @@ func update_tables() {
 	fit_test, fit_test_new = fit_test_new, fit_test
 	sem_train_cases, sem_train_cases_new = sem_train_cases_new, sem_train_cases
 	sem_test_cases, sem_test_cases_new = sem_test_cases_new, sem_test_cases
+	// Swap cuda buffers if needed
+	if *config.use_cuda {
+		cu_fit, cu_fit_new = cu_fit_new, cu_fit
+		cu_fit_test, cu_fit_test_new = cu_fit_test_new, cu_fit_test
+		cu_sem_train_cases, cu_sem_train_cases_new = cu_sem_train_cases_new, cu_sem_train_cases
+		cu_sem_test_cases, cu_sem_test_cases_new = cu_sem_test_cases_new, cu_sem_test_cases
+	}
 }
 
 // Return the next text token in the provided scanner
@@ -952,21 +1169,61 @@ func load_file_and_replace(path string, repl map[string]interface{}) string {
 	return target
 }
 
+// Allocates a slice of given size onto Unified Memory and returns
+// the memory as well as the cuda buffer handler
+// If not using CUDA, a regular allocation will happen and buffer
+// will be nil
+func alloc_cFloat64(size int) (*cuda.Buffer, []cFloat64) {
+	if *config.use_cuda {
+		buf, ptr := cuda.AllocManaged(C.sizeof_double * size)
+		data := (*[2 << 30]cFloat64)(ptr)
+		return buf, data[:size]
+	} else {
+		return nil, make([]cFloat64, size)
+	}
+}
+
+func alloc_cInt(size int) (*cuda.Buffer, []cInt) {
+	if *config.use_cuda {
+		buf, ptr := cuda.AllocManaged(C.sizeof_int * size)
+		data := (*[2 << 30]cInt)(ptr)
+		return buf, data[:size]
+	} else {
+		return nil, make([]cInt, size)
+	}
+}
+
+func alloc_and_copy_cInt(v []cInt) (*cuda.Buffer, []cInt) {
+	// Allocate data and copy
+	buf, sli := alloc_cInt(len(v))
+	for i := 0; i < len(v); i++ {
+		sli[i] = v[i]
+	}
+	return buf, sli
+}
+
 // Allocate memory for fitness and semantic value for each individual
 func init_tables() {
-	fit = make([]cFloat64, *config.population_size)
-	fit_test = make([]cFloat64, *config.population_size)
-	fit_new = make([]cFloat64, *config.population_size)
-	fit_test_new = make([]cFloat64, *config.population_size)
+	cu_fit, fit = alloc_cFloat64(*config.population_size)                   // make([]cFloat64, *config.population_size)
+	cu_fit_test, fit_test = alloc_cFloat64(*config.population_size)         // make([]cFloat64, *config.population_size)
+	cu_fit_new, fit_new = alloc_cFloat64(*config.population_size)           // make([]cFloat64, *config.population_size)
+	cu_fit_test_new, fit_test_new = alloc_cFloat64(*config.population_size) // make([]cFloat64, *config.population_size)
+
+	cu_sem_train_cases = make([]*cuda.Buffer, *config.population_size)
+	cu_sem_train_cases_new = make([]*cuda.Buffer, *config.population_size)
+	cu_sem_test_cases = make([]*cuda.Buffer, *config.population_size)
+	cu_sem_test_cases_new = make([]*cuda.Buffer, *config.population_size)
+
 	sem_train_cases = make([]Semantic, *config.population_size)
 	sem_train_cases_new = make([]Semantic, *config.population_size)
 	sem_test_cases = make([]Semantic, *config.population_size)
 	sem_test_cases_new = make([]Semantic, *config.population_size)
+
 	for i := 0; i < *config.population_size; i++ {
-		sem_train_cases[i] = make(Semantic, nrow)
-		sem_train_cases_new[i] = make(Semantic, nrow)
-		sem_test_cases[i] = make(Semantic, nrow_test)
-		sem_test_cases_new[i] = make(Semantic, nrow_test)
+		cu_sem_train_cases[i], sem_train_cases[i] = alloc_cFloat64(nrow)            // make(Semantic, nrow)
+		cu_sem_train_cases_new[i], sem_train_cases_new[i] = alloc_cFloat64(nrow)    // make(Semantic, nrow)
+		cu_sem_test_cases[i], sem_test_cases[i] = alloc_cFloat64(nrow_test)         // make(Semantic, nrow_test)
+		cu_sem_test_cases_new[i], sem_test_cases_new[i] = alloc_cFloat64(nrow_test) // make(Semantic, nrow_test)
 	}
 }
 
@@ -976,7 +1233,8 @@ func (a Arities) String() string {
 	return fmt.Sprintf("[%d] = {%v}", len(a), strings.Trim(strings.Replace(fmt.Sprint(([]cInt)(a)), " ", ", ", -1), "[]"))
 }
 
-func cuda_tree_generator() {
+/*
+func cuda_server() {
 	// CUDA context is bound to a specific thread, therefore it is necessary to lock this
 	// goroutine to the current thread
 	runtime.LockOSThread()
@@ -998,7 +1256,7 @@ func cuda_tree_generator() {
 		log.Println("Max grid size:", mgx, mgy, mgz)
 	}
 	// Create context and make it current
-	ctx := cuda.Create(devs[0], 0)
+	ctx = cuda.Create(devs[0], 0)
 	defer ctx.Destroy() // When done
 	log.Println("Context API version:", ctx.GetApiVersion())
 	ctx.Synchronize() // Check for errors
@@ -1066,6 +1324,20 @@ func cuda_tree_generator() {
 
 	gpu_out_evals.MemSet32(0, -1)
 
+	for {
+		switch cmd := <-cmdchan; cmd {
+		case CMD_REPRODUCE:
+			ind := <-cmdchan
+			log.Println("reproducing", ind)
+		case CMD_MUTATE:
+			ind := <-cmdchan
+			log.Println("mutating", ind)
+		case CMD_CROSSOVER:
+			ind := <-cmdchan
+			log.Println("crossover", ind)
+		}
+	}
+
 	// This goroutine will keep producing random trees
 	for {
 		// Create tree on host and move it to device
@@ -1093,8 +1365,15 @@ func cuda_tree_generator() {
 		semchan <- append([]cFloat64{}, cpu_out...)
 	}
 }
+*/
+func bpg(nThreads int) int {
+	return (nThreads + cu_tpb - 1) / cu_tpb
+}
 
 func main() {
+	// CUDA context is bound to a specific thread, therefore it is necessary to lock this
+	// goroutine to the current thread
+	runtime.LockOSThread()
 	// Parse CLI arguments: if they are set, they will override defaults and config file
 	flag.Parse()
 	// If required, show version and exit
@@ -1159,10 +1438,6 @@ func main() {
 	fitness_test := create_or_panic(*config.of_test)
 	defer fitness_test.Close()
 
-	// Tracking time
-	var start time.Time
-	start = time.Now()
-
 	// Seed RNG
 	rand.Seed(*config.rng_seed)
 	// Read training and testing datasets (populate nvar, nrow and set)
@@ -1171,10 +1446,108 @@ func main() {
 	create_T_F()
 
 	if *config.use_cuda {
-		// A separate goroutine will handle CUDA
-		semchan = make(chan Semantic, 4) // Buffered channel to have results ready if GPU is faster
-		go cuda_tree_generator()
+		// Initialize CUDA environment
+		cuda.Init()
+		// Get CUDA device
+		devs := cuda.GetDevices()
+		maj, min := cuda.GetNVRTCVersion()
+		// Be verbose on GPU being used
+		log.Println("CUDA Driver Version:", cuda.GetVersion())
+		log.Println("NVRTC Version:", maj, min)
+		log.Println("CUDA Num devices:", cuda.GetDevicesCount())
+		log.Println("Compute devices")
+		for i, d := range devs {
+			log.Printf("Device %d: %s %v bytes of memory\n", i, d.Name, d.TotalMem)
+			mbx, mby, mbz := d.GetMaxBlockDim()
+			log.Println("Max block size:", mbx, mby, mbz)
+			mgx, mgy, mgz := d.GetMaxGridDim()
+			log.Println("Max grid size:", mgx, mgy, mgz)
+		}
+		// Create context and make it current
+		ctx = cuda.Create(devs[0], 0)
+		defer ctx.Destroy() // When done
+
+		log.Println("Context API version:", ctx.GetApiVersion())
+		ctx.Synchronize() // Check for errors
+		log.Println("CUDA initialized successfully")
+
+		// Allocate room for dataset and copy
+		//	var tmp_set []cFloat64
+		//	cu_set, tmp_set = alloc_cFloat64((nrow + nrow_test) * (nvar + 1))
+
+		// Dataset is never modified, so there is no advantage in using Unified Memory
+		var tmp_set []cFloat64 = make([]cFloat64, (nrow+nrow_test)*(nvar+1))
+		cu_set = cuda.NewBuffer(int(C.sizeof_double * (nrow + nrow_test) * (nvar + 1))) // Storage for dataset
+		// Copy datasets, including target which is used to compute fitness
+		for i := 0; i < nrow+nrow_test; i++ {
+			for j := 0; j < nvar; j++ {
+				tmp_set[i*(nvar+1)+j] = cFloat64(set[i].vars[j])
+			}
+			tmp_set[i*(nvar+1)+nvar] = cFloat64(set[i].y_value)
+		}
+		cu_set.FromHost(unsafe.Pointer(&tmp_set[0]))
+
+		// Allocate room for symbols and copy
+		//	var tmp_sym_val []cFloat64
+		//	cu_sym_val, tmp_sym_val = alloc_cFloat64(len(symbols))
+
+		// Symbols are never modified, so there is no advantage in using Unified Memory
+		var tmp_sym_val = make([]cFloat64, len(symbols))
+		cu_sym_val = cuda.NewBuffer(C.sizeof_double * len(symbols))
+		// Copy symbols to temporary memory
+		for i := range symbols {
+			if !symbols[i].isFunc {
+				tmp_sym_val[i] = cFloat64(symbols[i].value)
+			} else {
+				tmp_sym_val[i] = -1 // Functionals have no value
+			}
+		}
+		cu_sym_val.FromHost(unsafe.Pointer(&tmp_sym_val[0]))
+
+		// Setup some temporary memory
+		/*
+			cu_tmp_sem_train, tmp_sem_train = alloc_cFloat64(nrow)
+			cu_tmp_sem_test, tmp_sem_test = alloc_cFloat64(nrow_test)
+		*/
+		cu_tmp_sem_train = cuda.NewBuffer(C.sizeof_double * nrow)
+		cu_tmp_sem_test = cuda.NewBuffer(C.sizeof_double * nrow_test)
+		cu_tmp_sem_tot1 = cuda.NewBuffer(C.sizeof_double * (nrow + nrow_test))
+		cu_tmp_sem_tot2 = cuda.NewBuffer(C.sizeof_double * (nrow + nrow_test))
+		cu_tmp_tree_arr1 = cuda.NewBuffer(C.sizeof_int * (2 << uint(*config.max_depth_creation+1))) // Storage for generated trees
+		cu_tmp_tree_arr2 = cuda.NewBuffer(C.sizeof_int * (2 << uint(*config.max_depth_creation+1))) // Storage for generated trees
+		cu_tmp_d1 = cuda.NewBuffer(C.sizeof_double)
+		cu_tmp_d2 = cuda.NewBuffer(C.sizeof_double)
+
+		// Number of blocks required to have at least 1 thread for each row in dataset
+		cu_bgp_ds = bpg(nrow + nrow_test)
+		cu_bpg_pop = bpg(*config.population_size)
+
+		// Load CUDA code and replace some variables
+		kernel_src := load_file_and_replace("./kernels.cu", map[string]interface{}{
+			"NUM_FUNCTIONAL_SYMBOLS": NUM_FUNCTIONAL_SYMBOLS,
+			"NUM_VARIABLE_SYMBOLS":   NUM_VARIABLE_SYMBOLS,
+			"NUM_CONSTANT_SYMBOLS":   NUM_CONSTANT_SYMBOLS,
+			"NROWS_TRAIN":            nrow,
+			"NROWS_TEST":             nrow_test,
+			"NROWS_TOT":              nrow + nrow_test,
+			"NUM_THREADS":            cu_tpb,
+		})
+
+		// Prepare kernels to eval and reduce trees
+		cu_mod = cuda.CreateModule()
+		cu_prog = cuda.CreateProgram(cuda.Source{kernel_src, "semantic_eval_arrays"})
+		cu_prog.Compile()
+		cu_mod.LoadData(cu_prog)
+
+		kern_eval_array = cu_mod.GetFunction("semantic_eval_arrays")
+		kern_crossover = cu_mod.GetFunction("sem_crossover")
+		kern_fitness = cu_mod.GetFunction("sem_fitness")
+		kern_mutation = cu_mod.GetFunction("sem_mutation")
 	}
+
+	// Tracking time
+	var start time.Time
+	start = time.Now()
 
 	// Create population and feed
 	p := NewPopulation(sem_seed...)
@@ -1203,10 +1576,17 @@ func main() {
 			default:
 				reproduction(cInt(k))
 			}
+			//		log.Println("Ind", k, sem_train_cases[k], sem_train_cases_new[k])
 		}
 
 		update_tables()
+
+		//	for k := 0; k < *config.population_size; k++ {
+		//		log.Println("Swap", k, sem_train_cases[k], sem_train_cases_new[k])
+		//	}
 		index_best = best_individual()
+
+		//	log.Println("Best individual", index_best)
 
 		fmt.Fprintln(fitness_train, fit[index_best])
 		fmt.Fprintln(fitness_test, fit_test[index_best])
@@ -1214,4 +1594,5 @@ func main() {
 		fmt.Fprintln(executiontime, time.Since(start))
 	}
 	log.Println("Total elapsed time since start:", time.Since(start))
+	log.Println("Benchmark:", BenchResult("random_tree"), BenchResult("crossover"), BenchResult("mutation"))
 }
