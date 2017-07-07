@@ -131,9 +131,13 @@ void sem_crossover(
 }
 
 extern "C" __device__
-double square_diff(double a, double b) {
-	return (a - b) * (a - b);
-}
+double square_diff(double a, double b) { return (a - b) * (a - b); }
+
+extern "C" __device__
+double abs_diff(double a, double b) { return abs(a - b); }
+
+extern "C" __device__
+double rel_abs_diff(double a, double b) { return abs (a - b) / a; }
 
 // Runs with only 2 threads, for this unoptimized version
 extern "C" __global__
@@ -143,14 +147,14 @@ void sem_fitness(double *set, double *sem_train, double *sem_test, double *out_f
 		double d = 0;
 		for (int i = 0; i < NROWS_TRAIN; i++) {
 			double yy = getDataset(NUM_VARIABLE_SYMBOLS, i, set);
-			d += square_diff(yy, sem_train[i]);
+			d += ERROR_FUNC(yy, sem_train[i]);
 		}
 		*out_fit_train = d / double(NROWS_TRAIN);
 	} else if (tig == 1) {
 		double d = 0;
 		for (int i = 0; i < NROWS_TEST; i++) {
 			double yy = getDataset(NUM_VARIABLE_SYMBOLS, i+NROWS_TRAIN, set);
-			d += square_diff(yy, sem_test[i]);
+			d += ERROR_FUNC(yy, sem_test[i]);
 		}
 		*out_fit_test = d / double(NROWS_TEST);
 	}

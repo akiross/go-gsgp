@@ -1139,13 +1139,18 @@ func main() {
 		log.Println("Using goroutines with", runtime.NumCPU(), "CPUs")
 	}
 
+	var cuda_dist string // Which function to use in CUDA for distance
+
 	switch strings.ToUpper(*config.error_measure) {
 	case "MAE":
 		dist_func = abs_diff
+		cuda_dist = "abs_diff"
 	case "MRE":
 		dist_func = rel_abs_diff
+		cuda_dist = "rel_abs_diff"
 	case "MSE":
 		dist_func = square_diff
+		cuda_dist = "square_diff"
 	default:
 		panic("Unknown error measure: " + *config.error_measure)
 	}
@@ -1257,6 +1262,7 @@ func main() {
 			"NROWS_TEST":             nrow_test,
 			"NROWS_TOT":              nrow + nrow_test,
 			"NUM_THREADS":            cu_tpb,
+			"ERROR_FUNC":             cuda_dist,
 		})
 
 		// Prepare kernels to eval and reduce trees
