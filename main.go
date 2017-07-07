@@ -48,7 +48,16 @@ type cInt C.int
 type cFloat64 C.double
 
 func exp64(v cFloat64) cFloat64 {
-	return cFloat64(math.Exp(float64(v)))
+	r := math.Exp(float64(v))
+	// Check for overflows
+	if (r == 0 && v > 0) || math.IsInf(r, 1) {
+		return cFloat64(math.MaxFloat64)
+	}
+	// Check for underflow
+	if r == 1 && v != 0 {
+		return 0
+	}
+	return cFloat64(r)
 }
 
 // Instance represent a single training/test instance in memory
@@ -872,6 +881,7 @@ func semantic_evaluate_array(tree *[]cInt, sem_size, sem_offs cInt) (cFloat64, S
 	return d, val
 }
 
+/*
 func random_tree_semantics() (Semantic, Semantic) {
 	bmk := StartBenchmark("random_tree")
 	defer bmk.Measure()
@@ -910,12 +920,12 @@ func random_tree_semantics() (Semantic, Semantic) {
 		return sem_train, sem_test
 	}
 }
+*/
 
 // Implements a tournament selection procedure
 func tournament_selection() cInt {
 	// Select first participant
 	best_index := rand.Intn(*config.population_size)
-	// Pick best individual
 	for i := 1; i < *config.tournament_size; i++ {
 		next := rand.Intn(*config.population_size)
 		if better(fit[next], fit[best_index]) {
@@ -947,13 +957,19 @@ func geometric_semantic_crossover(i cInt) {
 	bmk := StartBenchmark("crossover")
 	defer bmk.Measure()
 
-	if !*config.use_cuda {
-		if i != index_best {
-			// Replace the individual with the crossover of two parents
-			p1 := tournament_selection()
-			p2 := tournament_selection()
+	if i != index_best {
+		// Create random tree
+		rt := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
+		// Replace the individual with the crossover of two parents
+		p1 := tournament_selection()
+		p2 := tournament_selection()
+
+		if !*config.use_cuda {
 			// Generate a random tree and compute its semantic (train and test)
-			sem_rt, sem_rt_test := random_tree_semantics()
+			//sem_rt, sem_rt_test := random_tree_semantics()
+			_, sem_rt := semantic_evaluate_array(&rt, cInt(nrow), 0)
+			_, sem_rt_test := semantic_evaluate_array(&rt, cInt(nrow_test), cInt(nrow))
+
 			// Compute the geometric semantic (train)
 			for j := 0; j < nrow; j++ {
 				sigmoid := 1 / (1 + exp64(-sem_rt[j]))
@@ -967,25 +983,7 @@ func geometric_semantic_crossover(i cInt) {
 			}
 			fit_test_new[i] = fitness_of_semantic(sem_test_cases_new[i], cInt(nrow_test), cInt(nrow))
 		} else {
-			// The best individual will not be changed
-			copy(sem_train_cases_new[i], sem_train_cases[i])
-			copy(sem_test_cases_new[i], sem_test_cases[i])
-			fit_new[i] = fit[i]
-			fit_test_new[i] = fit_test[i]
-		}
-	} else {
-		if i != index_best {
-			// Replace the individual with the crossover of two parents
-			p1 := tournament_selection()
-			p2 := tournament_selection()
-
-			// Generate a random tree and compute its semantic (train and test)
-			// TODO the tree used here and the one above are different when
-			// executing on CPU or GPU. This difference could be removed by using
-			// create_grow_tree_arrays in both cases
-
 			// Create a tree and copy it to unified memory
-			rt := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
 			cu_tmp_tree_arr1.FromHostN(unsafe.Pointer(&rt[0]), C.sizeof_int*len(rt))
 
 			// Evaluate the tree on GPU
@@ -1019,13 +1017,13 @@ func geometric_semantic_crossover(i cInt) {
 
 			fit_new[i] = cFloat64(cu_tmp_d1.ToFloat64())
 			fit_test_new[i] = cFloat64(cu_tmp_d2.ToFloat64())
-		} else {
-			// The best individual will not be changed
-			copy(sem_train_cases_new[i], sem_train_cases[i])
-			copy(sem_test_cases_new[i], sem_test_cases[i])
-			fit_new[i] = fit[i]
-			fit_test_new[i] = fit_test[i]
 		}
+	} else {
+		// The best individual will not be changed
+		copy(sem_train_cases_new[i], sem_train_cases[i])
+		copy(sem_test_cases_new[i], sem_test_cases[i])
+		fit_new[i] = fit[i]
+		fit_test_new[i] = fit_test[i]
 	}
 }
 
@@ -1035,12 +1033,21 @@ func geometric_semantic_mutation(i cInt) {
 	defer bmk.Measure()
 
 	if i != index_best {
+		mut_step := cFloat64(rand.Float64())
+		// Create two random trees and copy it to unified memory
+		rt1 := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
+		rt2 := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
+
 		if !*config.use_cuda {
 			// Replace the individual with a mutated version
-			sem_rt1, sem_rt1_test := random_tree_semantics()
-			sem_rt2, sem_rt2_test := random_tree_semantics()
+			//		sem_rt1, sem_rt1_test := random_tree_semantics()
+			//		sem_rt2, sem_rt2_test := random_tree_semantics()
 
-			mut_step := cFloat64(rand.Float64())
+			_, sem_rt1 := semantic_evaluate_array(&rt1, cInt(nrow), 0)
+			_, sem_rt1_test := semantic_evaluate_array(&rt1, cInt(nrow_test), cInt(nrow))
+
+			_, sem_rt2 := semantic_evaluate_array(&rt2, cInt(nrow), 0)
+			_, sem_rt2_test := semantic_evaluate_array(&rt2, cInt(nrow_test), cInt(nrow))
 
 			for j := 0; j < nrow; j++ {
 				sigmoid1 := 1 / (1 + exp64(-sem_rt1[j]))
@@ -1048,6 +1055,7 @@ func geometric_semantic_mutation(i cInt) {
 				sem_train_cases_new[i][j] += mut_step * (sigmoid1 - sigmoid2)
 			}
 			fit_new[i] = fitness_of_semantic(sem_train_cases_new[i], cInt(nrow), 0)
+
 			for j := 0; j < nrow_test; j++ {
 				sigmoid1 := 1 / (1 + exp64(-sem_rt1_test[j]))
 				sigmoid2 := 1 / (1 + exp64(-sem_rt2_test[j]))
@@ -1055,19 +1063,18 @@ func geometric_semantic_mutation(i cInt) {
 			}
 			fit_test_new[i] = fitness_of_semantic(sem_test_cases_new[i], cInt(nrow_test), cInt(nrow))
 		} else {
-			// Create two random trees and copy it to unified memory
-			rt1 := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
-			rt2 := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
 			// Copy trees to GPU
 			cu_tmp_tree_arr1.FromHostN(unsafe.Pointer(&rt1[0]), C.sizeof_int*len(rt1))
 			cu_tmp_tree_arr2.FromHostN(unsafe.Pointer(&rt2[0]), C.sizeof_int*len(rt2))
 			// Evaluate the tree on GPU
 			kern_eval_array.Launch1D(cu_bgp_ds, cu_tpb, 0, cu_sym_val, cu_set, cu_tmp_tree_arr1, cu_tmp_sem_tot1)
 			kern_eval_array.Launch1D(cu_bgp_ds, cu_tpb, 0, cu_sym_val, cu_set, cu_tmp_tree_arr2, cu_tmp_sem_tot2)
+
 			// Copy mut step to GPU
-			cu_tmp_d1.FromFloat64(rand.Float64())
+			cu_tmp_d1.FromFloat64(float64(mut_step))
 			// Run kernel that perform mutation
 			kern_mutation.Launch1D(cu_bgp_ds, cu_tpb, 0, cu_tmp_sem_tot1, cu_tmp_sem_tot2, cu_tmp_d1, cu_sem_train_cases_new[i], cu_sem_test_cases_new[i])
+
 			// Evaluate fitness
 			kern_fitness.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_train_cases_new[i], cu_sem_test_cases_new[i], cu_tmp_d1, cu_tmp_d2)
 			// Copy back results
@@ -1227,145 +1234,6 @@ func init_tables() {
 	}
 }
 
-type Arities []cInt
-
-func (a Arities) String() string {
-	return fmt.Sprintf("[%d] = {%v}", len(a), strings.Trim(strings.Replace(fmt.Sprint(([]cInt)(a)), " ", ", ", -1), "[]"))
-}
-
-/*
-func cuda_server() {
-	// CUDA context is bound to a specific thread, therefore it is necessary to lock this
-	// goroutine to the current thread
-	runtime.LockOSThread()
-
-	// Initialize CUDA environment
-	cuda.Init()
-	devs := cuda.GetDevices()
-	maj, min := cuda.GetNVRTCVersion()
-	// Be verbose on GPU being used
-	log.Println("CUDA Driver Version:", cuda.GetVersion())
-	log.Println("NVRTC Version:", maj, min)
-	log.Println("CUDA Num devices:", cuda.GetDevicesCount())
-	log.Println("Compute devices")
-	for i, d := range devs {
-		log.Printf("Device %d: %s %v bytes of memory\n", i, d.Name, d.TotalMem)
-		mbx, mby, mbz := d.GetMaxBlockDim()
-		log.Println("Max block size:", mbx, mby, mbz)
-		mgx, mgy, mgz := d.GetMaxGridDim()
-		log.Println("Max grid size:", mgx, mgy, mgz)
-	}
-	// Create context and make it current
-	ctx = cuda.Create(devs[0], 0)
-	defer ctx.Destroy() // When done
-	log.Println("Context API version:", ctx.GetApiVersion())
-	ctx.Synchronize() // Check for errors
-	log.Println("CUDA initialized successfully")
-
-	// Prepare grid dimensions
-	tpb := 256 // TODO Get this from attr
-	bpg := (nrow + nrow_test + tpb - 1) / tpb
-
-	log.Println("CUDA Threads Per Block", tpb)
-	log.Println("CUDA Blocks Per Grid", bpg)
-
-	// Allocate memory for GPU computation
-	var (
-		len_ds         = C.size_t(nrow + nrow_test)                                               // Length of dataset
-		num_vars       = C.size_t(nvar + 1)                                                       // Number of variables
-		cpu_out        = make([]cFloat64, nrow+nrow_test)                                         // Storage for semantic
-		cpu_set        = make([]cFloat64, (nrow+nrow_test)*(nvar+1))                              // Temporary storage for dataset
-		gpu_set        = cuda.NewBuffer(int(C.sizeof_double * len_ds * num_vars))                 // Storage for dataset
-		cpu_sym_val    = make([]cFloat64, len(symbols))                                           // Temporary storage for symbols
-		gpu_sym_val    = cuda.NewBuffer(C.sizeof_double * len(symbols))                           // Storage for symbols
-		gpu_tree_arr   = cuda.NewBuffer(C.sizeof_int * (2 << uint(*config.max_depth_creation+1))) // Storage for generated trees
-		num_evals      = tpb * int(math.Ceil(float64(nrow+nrow_test)/float64(tpb)))               // Align dataset size to threads in block
-		gpu_out_evals  = cuda.NewBuffer(C.sizeof_double * num_evals)                              // Output of semantic evaluation
-		gpu_out_reduce = cuda.NewBuffer(C.sizeof_double * bpg)                                    // Output for reduction (for fitness)
-		out_reduce     = make([]cFloat64, bpg)                                                    // CPU output for reduction
-	)
-	// Copy datasets, including target which is used to compute fitness
-	for i := 0; i < nrow+nrow_test; i++ {
-		for j := 0; j < nvar; j++ {
-			cpu_set[i*(nvar+1)+j] = cFloat64(set[i].vars[j])
-		}
-		cpu_set[i*(nvar+1)+nvar] = cFloat64(set[i].y_value)
-	}
-	// Transfer to GPU
-	gpu_set.FromHost(unsafe.Pointer(&cpu_set[0]))
-
-	// Copy symbols value
-	for i := range symbols {
-		if !symbols[i].isFunc {
-			cpu_sym_val[i] = cFloat64(symbols[i].value)
-		} else {
-			cpu_sym_val[i] = -1 // Functionals have no value
-		}
-	}
-	gpu_sym_val.FromHost(unsafe.Pointer(&cpu_sym_val[0]))
-
-	// Load CUDA code and replace some variables
-	kernel_src := load_file_and_replace("./kernels.cu", map[string]interface{}{
-		"NUM_FUNCTIONAL_SYMBOLS": NUM_FUNCTIONAL_SYMBOLS,
-		"NUM_VARIABLE_SYMBOLS":   NUM_VARIABLE_SYMBOLS,
-		"NUM_CONSTANT_SYMBOLS":   NUM_CONSTANT_SYMBOLS,
-		"NROWS":                  nrow + nrow_test,
-		"NUM_THREADS":            tpb,
-	})
-
-	// Prepare kernels to eval and reduce trees
-	mod := cuda.CreateModule()
-	prog := cuda.CreateProgram(cuda.Source{kernel_src, "semantic_eval_arrays"})
-	prog.Compile()
-	mod.LoadData(prog)
-	// Kernels being used
-	cuda_sem_eval := mod.GetFunction("semantic_eval_arrays")
-	cuda_reduce := mod.GetFunction("reduce")
-
-	gpu_out_evals.MemSet32(0, -1)
-
-	for {
-		switch cmd := <-cmdchan; cmd {
-		case CMD_REPRODUCE:
-			ind := <-cmdchan
-			log.Println("reproducing", ind)
-		case CMD_MUTATE:
-			ind := <-cmdchan
-			log.Println("mutating", ind)
-		case CMD_CROSSOVER:
-			ind := <-cmdchan
-			log.Println("crossover", ind)
-		}
-	}
-
-	// This goroutine will keep producing random trees
-	for {
-		// Create tree on host and move it to device
-		cpu_tree_arr := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
-		// Read the tree from the channel, so that we can compare CPU and GPU
-		gpu_tree_arr.FromHostN(unsafe.Pointer(&cpu_tree_arr[0]), C.sizeof_int*len(cpu_tree_arr))
-		// Evaluate the tree and sum-reduce the semantics
-		cuda_sem_eval.Launch1D(bpg, tpb, 0, gpu_sym_val, gpu_set, gpu_tree_arr, gpu_out_evals)
-		// Reduce (not used right now, but relevant later)
-		cuda_reduce.Launch1D(bpg, tpb, 0, gpu_out_evals, gpu_out_reduce)
-		ctx.Synchronize()
-		// Copy back reduction
-		if false { // Currently not used
-			gpu_out_reduce.FromDevice(unsafe.Pointer(&out_reduce[0]))
-			// Compute average
-			var gpu_avg cFloat64
-			for ii := range out_reduce {
-				gpu_avg += out_reduce[ii]
-			}
-			gpu_avg = gpu_avg
-		}
-		// Copy semantic back to host
-		gpu_out_evals.FromDeviceN(unsafe.Pointer(&cpu_out[0]), len(cpu_out)*C.sizeof_double)
-		// Send a copy of the semantic on channel
-		semchan <- append([]cFloat64{}, cpu_out...)
-	}
-}
-*/
 func bpg(nThreads int) int {
 	return (nThreads + cu_tpb - 1) / cu_tpb
 }
@@ -1576,17 +1444,11 @@ func main() {
 			default:
 				reproduction(cInt(k))
 			}
-			//		log.Println("Ind", k, sem_train_cases[k], sem_train_cases_new[k])
 		}
 
 		update_tables()
 
-		//	for k := 0; k < *config.population_size; k++ {
-		//		log.Println("Swap", k, sem_train_cases[k], sem_train_cases_new[k])
-		//	}
 		index_best = best_individual()
-
-		//	log.Println("Best individual", index_best)
 
 		fmt.Fprintln(fitness_train, fit[index_best])
 		fmt.Fprintln(fitness_test, fit_test[index_best])

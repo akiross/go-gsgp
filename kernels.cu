@@ -1,7 +1,16 @@
 // Selects the value from the dataset of variable varId at given row
 extern "C" __device__
 double getDataset(int varId, int row, double *set) {
-	return set[row * (NUM_VARIABLE_SYMBOLS + 1) + (varId - NUM_FUNCTIONAL_SYMBOLS)];
+	return set[row * (NUM_VARIABLE_SYMBOLS + 1) + varId];
+}
+
+extern "C" __device__
+double exp64(double v) {
+	double r = exp(v);
+	if (isinf(r)) {
+		return 1.7976931348623158e+308;
+	}
+	return r;
 }
 
 
@@ -44,7 +53,7 @@ double eval_arrays(double *sym, double *set, int *tree, int start, int i) {
 		}
 	}
 	if (id >= NUM_FUNCTIONAL_SYMBOLS && id < NUM_FUNCTIONAL_SYMBOLS + NUM_VARIABLE_SYMBOLS) {
-		return getDataset(id, i, set);
+		return getDataset(id - NUM_FUNCTIONAL_SYMBOLS, i, set);
 	}
 	//if (id >= NUM_FUNCTIONAL_SYMBOLS+NUM_VARIABLE_SYMBOLS) {
 	return sym[id];
@@ -112,11 +121,11 @@ void sem_crossover(
 
 	if (tig < NROWS_TRAIN) {
 		int j = tig;
-		double sigm = 1.0 / (1.0 + exp(-sem_tot[tig]));
+		double sigm = 1.0 / (1.0 + exp64(-sem_tot[tig]));
 		out_train_sem[j] = p1_train_sem[j] * sigm + p2_train_sem[j] * (1-sigm);
 	} else if (tig < NROWS_TOT) {
 		int j = tig - NROWS_TRAIN;
-		double sigm = 1.0 / (1.0 + exp(-sem_tot[tig]));
+		double sigm = 1.0 / (1.0 + exp64(-sem_tot[tig]));
 		out_test_sem[j] = p1_test_sem[j] * sigm + p2_test_sem[j] * (1-sigm);
 	}
 }
@@ -152,12 +161,12 @@ void sem_mutation(double *sem_tot1, double *sem_tot2, double *mut_step, double *
 	int tig = blockIdx.x * blockDim.x + threadIdx.x;
 
 	if (tig < NROWS_TRAIN) {
-		double sigm1 = 1.0 / (1.0 + exp(-sem_tot1[tig]));
-		double sigm2 = 1.0 / (1.0 + exp(-sem_tot2[tig]));
+		double sigm1 = 1.0 / (1.0 + exp64(-sem_tot1[tig]));
+		double sigm2 = 1.0 / (1.0 + exp64(-sem_tot2[tig]));
 		out_train_sem[tig] += *mut_step * (sigm1 - sigm2);
 	} else if (tig < NROWS_TOT) {
-		double sigm1 = 1.0 / (1.0 + exp(-sem_tot1[tig]));
-		double sigm2 = 1.0 / (1.0 + exp(-sem_tot2[tig]));
+		double sigm1 = 1.0 / (1.0 + exp64(-sem_tot1[tig]));
+		double sigm2 = 1.0 / (1.0 + exp64(-sem_tot2[tig]));
 		out_test_sem[tig-NROWS_TRAIN] += *mut_step * (sigm1 - sigm2);
 	}
 }
