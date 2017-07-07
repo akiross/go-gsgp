@@ -197,10 +197,10 @@ var (
 
 	cu_set                 *cuda.Buffer
 	cu_sym_val             *cuda.Buffer
-	cu_fit                 *cuda.Buffer
-	cu_fit_test            *cuda.Buffer
-	cu_fit_new             *cuda.Buffer
-	cu_fit_test_new        *cuda.Buffer
+	cu_fit                 *cuda.Buffer // Unused
+	cu_fit_test            *cuda.Buffer // Unused
+	cu_fit_new             *cuda.Buffer // Unused
+	cu_fit_test_new        *cuda.Buffer // Unused
 	cu_sem_train_cases     []*cuda.Buffer
 	cu_sem_train_cases_new []*cuda.Buffer
 	cu_sem_test_cases      []*cuda.Buffer
@@ -821,6 +821,11 @@ func evaluate(p *Population) {
 	fit_test[0] = f
 	copy(sem_test_cases[0], s)
 
+	if *config.use_cuda {
+		cu_sem_train_cases[0].FromHost(unsafe.Pointer(&sem_train_cases[0][0]))
+		cu_sem_test_cases[0].FromHost(unsafe.Pointer(&sem_test_cases[0][0]))
+	}
+
 	for i := 1; i < *config.population_size; i++ {
 		f, s = semantic_evaluate(p.individuals[i], cInt(nrow), 0)
 		fit[i] = f
@@ -829,6 +834,11 @@ func evaluate(p *Population) {
 		f, s = semantic_evaluate(p.individuals[i], cInt(nrow_test), cInt(nrow))
 		fit_test[i] = f
 		copy(sem_test_cases[i], s)
+
+		if *config.use_cuda {
+			cu_sem_train_cases[i].FromHost(unsafe.Pointer(&sem_train_cases[i][0]))
+			cu_sem_test_cases[i].FromHost(unsafe.Pointer(&sem_test_cases[i][0]))
+		}
 	}
 }
 
@@ -947,9 +957,15 @@ func reproduction(i cInt) {
 
 	// Copy fitness and semantics of the selected individual
 	copy(sem_train_cases_new[old_i], sem_train_cases[i])
-	fit_new[old_i] = fit[i]
 	copy(sem_test_cases_new[old_i], sem_test_cases[i])
+
+	fit_new[old_i] = fit[i]
 	fit_test_new[old_i] = fit_test[i]
+
+	if *config.use_cuda {
+		cu_sem_train_cases_new[old_i].FromHost(unsafe.Pointer(&sem_train_cases[i][0]))
+		cu_sem_test_cases_new[old_i].FromHost(unsafe.Pointer(&sem_test_cases[i][0]))
+	}
 }
 
 // Performs a geometric semantic crossover
@@ -1010,10 +1026,13 @@ func geometric_semantic_crossover(i cInt) {
 				cu_sem_test_cases_new[i],  // Destination for new test sem
 			)
 
+			cu_sem_train_cases_new[i].FromDevice(unsafe.Pointer(&sem_train_cases_new[i][0]))
+			cu_sem_test_cases_new[i].FromDevice(unsafe.Pointer(&sem_test_cases_new[i][0]))
+
 			// Evaluate fitness
 			kern_fitness.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_train_cases_new[i], cu_sem_test_cases_new[i], cu_tmp_d1, cu_tmp_d2)
 
-			ctx.Synchronize()
+			//ctx.Synchronize()
 
 			fit_new[i] = cFloat64(cu_tmp_d1.ToFloat64())
 			fit_test_new[i] = cFloat64(cu_tmp_d2.ToFloat64())
@@ -1022,8 +1041,14 @@ func geometric_semantic_crossover(i cInt) {
 		// The best individual will not be changed
 		copy(sem_train_cases_new[i], sem_train_cases[i])
 		copy(sem_test_cases_new[i], sem_test_cases[i])
+
 		fit_new[i] = fit[i]
 		fit_test_new[i] = fit_test[i]
+
+		if *config.use_cuda {
+			cu_sem_train_cases_new[i].FromHost(unsafe.Pointer(&sem_train_cases[i][0]))
+			cu_sem_test_cases_new[i].FromHost(unsafe.Pointer(&sem_test_cases[i][0]))
+		}
 	}
 }
 
@@ -1075,10 +1100,15 @@ func geometric_semantic_mutation(i cInt) {
 			// Run kernel that perform mutation
 			kern_mutation.Launch1D(cu_bgp_ds, cu_tpb, 0, cu_tmp_sem_tot1, cu_tmp_sem_tot2, cu_tmp_d1, cu_sem_train_cases_new[i], cu_sem_test_cases_new[i])
 
+			// Copy back results
+			cu_sem_train_cases_new[i].FromDevice(unsafe.Pointer(&sem_train_cases_new[i][0]))
+			cu_sem_test_cases_new[i].FromDevice(unsafe.Pointer(&sem_test_cases_new[i][0]))
+
 			// Evaluate fitness
 			kern_fitness.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_train_cases_new[i], cu_sem_test_cases_new[i], cu_tmp_d1, cu_tmp_d2)
-			// Copy back results
-			ctx.Synchronize()
+
+			//ctx.Synchronize()
+
 			fit_new[i] = cFloat64(cu_tmp_d1.ToFloat64())
 			fit_test_new[i] = cFloat64(cu_tmp_d2.ToFloat64())
 		}
@@ -1180,6 +1210,7 @@ func load_file_and_replace(path string, repl map[string]interface{}) string {
 // the memory as well as the cuda buffer handler
 // If not using CUDA, a regular allocation will happen and buffer
 // will be nil
+/*
 func alloc_cFloat64(size int) (*cuda.Buffer, []cFloat64) {
 	if *config.use_cuda {
 		buf, ptr := cuda.AllocManaged(C.sizeof_double * size)
@@ -1189,7 +1220,20 @@ func alloc_cFloat64(size int) (*cuda.Buffer, []cFloat64) {
 		return nil, make([]cFloat64, size)
 	}
 }
+*/
 
+// Unmanaged version of alloc_cFloat64
+func alloc_cFloat64(size int) (*cuda.Buffer, []cFloat64) {
+	cpu := make([]cFloat64, size)
+	if *config.use_cuda {
+		gpu := cuda.NewBuffer(C.sizeof_double * size)
+		return gpu, cpu
+	} else {
+		return nil, cpu
+	}
+}
+
+/*
 func alloc_cInt(size int) (*cuda.Buffer, []cInt) {
 	if *config.use_cuda {
 		buf, ptr := cuda.AllocManaged(C.sizeof_int * size)
@@ -1208,6 +1252,7 @@ func alloc_and_copy_cInt(v []cInt) (*cuda.Buffer, []cInt) {
 	}
 	return buf, sli
 }
+*/
 
 // Allocate memory for fitness and semantic value for each individual
 func init_tables() {
