@@ -197,10 +197,6 @@ var (
 
 	cu_set                 *cuda.Buffer
 	cu_sym_val             *cuda.Buffer
-	cu_fit                 *cuda.Buffer // Unused
-	cu_fit_test            *cuda.Buffer // Unused
-	cu_fit_new             *cuda.Buffer // Unused
-	cu_fit_test_new        *cuda.Buffer // Unused
 	cu_sem_train_cases     []*cuda.Buffer
 	cu_sem_train_cases_new []*cuda.Buffer
 	cu_sem_test_cases      []*cuda.Buffer
@@ -228,50 +224,6 @@ type sink int
 
 func (s sink) Close() error                { return nil }
 func (s sink) Write(p []byte) (int, error) { return len(p), nil }
-
-// Simple tool for benchmarking a section of code
-type Benchmark struct {
-	start time.Time
-	durat time.Duration
-	count int
-}
-
-var benchmarks map[string]*Benchmark
-
-func StartBenchmark(name string) *Benchmark {
-	if benchmarks == nil {
-		benchmarks = make(map[string]*Benchmark)
-	}
-	var bmk Benchmark
-	benchmarks[name] = &bmk
-	defer bmk.Start()
-	return &bmk
-}
-
-func (b *Benchmark) Start() {
-	b.start = time.Now()
-}
-
-func (b *Benchmark) Measure() {
-	b.durat += time.Since(b.start)
-	b.count++
-}
-
-func (b *Benchmark) Average() time.Duration {
-	if b.count == 0 {
-		return -1
-	}
-	return time.Duration(int64(b.durat) / int64(b.count))
-}
-
-func BenchResult(name string) time.Duration {
-	val, ok := benchmarks[name]
-	if ok {
-		return val.Average()
-	} else {
-		return -1
-	}
-}
 
 func init() {
 	// Reading the config here allows to use a different config file path, as init is executed after variables initialization
@@ -663,40 +615,6 @@ func create_full_tree(depth cInt, parent *Node, max_depth cInt) *Node {
 	return el
 }
 
-// Convert a Node-based tree to a array-based tree
-func tree_to_array(root *Node) []cInt {
-	var rec_build func(n *Node, base cInt) []cInt
-	rec_build = func(n *Node, base cInt) []cInt {
-		if n.root.isFunc {
-			t := make([]cInt, n.root.arity+1)
-			t[0] = cInt(n.root.id)
-			for c := range n.children {
-				t[c+1] = cInt(len(t)) + base
-				ct := rec_build(n.children[c], t[c+1]) //base+n.root.arity+1)
-				t = append(t, ct...)
-			}
-			return t
-		} else {
-			return []cInt{cInt(n.root.id)}
-		}
-	}
-
-	return rec_build(root, 0)
-}
-
-// Return a string representing a tree (S-expr)
-func write_tree(el *Node) string {
-	if el.root.isFunc {
-		out := fmt.Sprintf("(%v[%v] ", el.root.name, el.root.id) //"(" + el.root.name + "[" + "] "
-		for i := cInt(0); i < el.root.arity-1; i++ {
-			out += write_tree(el.children[i]) + " "
-		}
-		return out + write_tree(el.children[el.root.arity-1]) + ")"
-	} else {
-		return fmt.Sprintf("%v[%v]", el.root.name, el.root.id) // el.root.name // This should be the variable name or the constant value
-	}
-}
-
 // Convert string with numeric constant into a symbol and add it to list
 func add_symbol(name string) *Symbol {
 	val, err := strconv.ParseFloat(name, 64)
@@ -891,47 +809,6 @@ func semantic_evaluate_array(tree *[]cInt, sem_size, sem_offs cInt) (cFloat64, S
 	return d, val
 }
 
-/*
-func random_tree_semantics() (Semantic, Semantic) {
-	bmk := StartBenchmark("random_tree")
-	defer bmk.Measure()
-
-	// Use same array for riproducible results
-	rt := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
-
-	if !*config.use_cuda {
-		// Generate a random tree and compute its semantic (train and test)
-		//	rt := create_grow_tree(0, nil, cInt(*config.max_depth_creation))
-		//_, sem_train := semantic_evaluate(rt, cInt(nrow), 0)
-		//_, sem_test := semantic_evaluate(rt, cInt(nrow_test), cInt(nrow))
-		_, sem_train := semantic_evaluate_array(&rt, cInt(nrow), 0)
-		_, sem_test := semantic_evaluate_array(&rt, cInt(nrow_test), cInt(nrow))
-
-		return sem_train, sem_test
-	} else {
-		// Create a tree and copy it to unified memory
-		//		rt := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
-		cu_tmp_tree_arr1.FromHostN(unsafe.Pointer(&rt[0]), C.sizeof_int*len(rt))
-
-		// Evaluate the tree on GPU
-		kern_eval_array.Launch1D(
-			cu_bgp_ds,        // Number of blocks for dataset
-			cu_tpb,           // Number of threads per block is fixed
-			0,                // No shared memory needed
-			cu_sym_val,       // Value for symbols
-			cu_set,           // Dataset
-			cu_tmp_tree_arr1, // Tree to evaluate
-			cu_tmp_sem_tot1)  // Output, semantic for whole dataset
-
-		// Copy back the results and return
-		sem_tot := make([]cFloat64, nrow+nrow_test)
-		cu_tmp_sem_tot1.FromDevice(unsafe.Pointer(&sem_tot[0]))
-		sem_train, sem_test := sem_tot[:nrow], sem_tot[nrow:]
-		return sem_train, sem_test
-	}
-}
-*/
-
 // Implements a tournament selection procedure
 func tournament_selection() cInt {
 	// Select first participant
@@ -970,9 +847,6 @@ func reproduction(i cInt) {
 
 // Performs a geometric semantic crossover
 func geometric_semantic_crossover(i cInt) {
-	bmk := StartBenchmark("crossover")
-	defer bmk.Measure()
-
 	if i != index_best {
 		// Create random tree
 		rt := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
@@ -1032,8 +906,6 @@ func geometric_semantic_crossover(i cInt) {
 			// Evaluate fitness
 			kern_fitness.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_train_cases_new[i], cu_sem_test_cases_new[i], cu_tmp_d1, cu_tmp_d2)
 
-			//ctx.Synchronize()
-
 			fit_new[i] = cFloat64(cu_tmp_d1.ToFloat64())
 			fit_test_new[i] = cFloat64(cu_tmp_d2.ToFloat64())
 		}
@@ -1054,9 +926,6 @@ func geometric_semantic_crossover(i cInt) {
 
 // Performs a geometric semantic mutation
 func geometric_semantic_mutation(i cInt) {
-	bmk := StartBenchmark("mutation")
-	defer bmk.Measure()
-
 	if i != index_best {
 		mut_step := cFloat64(rand.Float64())
 		// Create two random trees and copy it to unified memory
@@ -1065,9 +934,6 @@ func geometric_semantic_mutation(i cInt) {
 
 		if !*config.use_cuda {
 			// Replace the individual with a mutated version
-			//		sem_rt1, sem_rt1_test := random_tree_semantics()
-			//		sem_rt2, sem_rt2_test := random_tree_semantics()
-
 			_, sem_rt1 := semantic_evaluate_array(&rt1, cInt(nrow), 0)
 			_, sem_rt1_test := semantic_evaluate_array(&rt1, cInt(nrow_test), cInt(nrow))
 
@@ -1107,8 +973,6 @@ func geometric_semantic_mutation(i cInt) {
 			// Evaluate fitness
 			kern_fitness.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_train_cases_new[i], cu_sem_test_cases_new[i], cu_tmp_d1, cu_tmp_d2)
 
-			//ctx.Synchronize()
-
 			fit_new[i] = cFloat64(cu_tmp_d1.ToFloat64())
 			fit_test_new[i] = cFloat64(cu_tmp_d2.ToFloat64())
 		}
@@ -1146,8 +1010,6 @@ func update_tables() {
 	sem_test_cases, sem_test_cases_new = sem_test_cases_new, sem_test_cases
 	// Swap cuda buffers if needed
 	if *config.use_cuda {
-		cu_fit, cu_fit_new = cu_fit_new, cu_fit
-		cu_fit_test, cu_fit_test_new = cu_fit_test_new, cu_fit_test
 		cu_sem_train_cases, cu_sem_train_cases_new = cu_sem_train_cases_new, cu_sem_train_cases
 		cu_sem_test_cases, cu_sem_test_cases_new = cu_sem_test_cases_new, cu_sem_test_cases
 	}
@@ -1206,22 +1068,6 @@ func load_file_and_replace(path string, repl map[string]interface{}) string {
 	return target
 }
 
-// Allocates a slice of given size onto Unified Memory and returns
-// the memory as well as the cuda buffer handler
-// If not using CUDA, a regular allocation will happen and buffer
-// will be nil
-/*
-func alloc_cFloat64(size int) (*cuda.Buffer, []cFloat64) {
-	if *config.use_cuda {
-		buf, ptr := cuda.AllocManaged(C.sizeof_double * size)
-		data := (*[2 << 30]cFloat64)(ptr)
-		return buf, data[:size]
-	} else {
-		return nil, make([]cFloat64, size)
-	}
-}
-*/
-
 // Unmanaged version of alloc_cFloat64
 func alloc_cFloat64(size int) (*cuda.Buffer, []cFloat64) {
 	cpu := make([]cFloat64, size)
@@ -1233,33 +1079,12 @@ func alloc_cFloat64(size int) (*cuda.Buffer, []cFloat64) {
 	}
 }
 
-/*
-func alloc_cInt(size int) (*cuda.Buffer, []cInt) {
-	if *config.use_cuda {
-		buf, ptr := cuda.AllocManaged(C.sizeof_int * size)
-		data := (*[2 << 30]cInt)(ptr)
-		return buf, data[:size]
-	} else {
-		return nil, make([]cInt, size)
-	}
-}
-
-func alloc_and_copy_cInt(v []cInt) (*cuda.Buffer, []cInt) {
-	// Allocate data and copy
-	buf, sli := alloc_cInt(len(v))
-	for i := 0; i < len(v); i++ {
-		sli[i] = v[i]
-	}
-	return buf, sli
-}
-*/
-
 // Allocate memory for fitness and semantic value for each individual
 func init_tables() {
-	cu_fit, fit = alloc_cFloat64(*config.population_size)                   // make([]cFloat64, *config.population_size)
-	cu_fit_test, fit_test = alloc_cFloat64(*config.population_size)         // make([]cFloat64, *config.population_size)
-	cu_fit_new, fit_new = alloc_cFloat64(*config.population_size)           // make([]cFloat64, *config.population_size)
-	cu_fit_test_new, fit_test_new = alloc_cFloat64(*config.population_size) // make([]cFloat64, *config.population_size)
+	fit = make([]cFloat64, *config.population_size)
+	fit_test = make([]cFloat64, *config.population_size)
+	fit_new = make([]cFloat64, *config.population_size)
+	fit_test_new = make([]cFloat64, *config.population_size)
 
 	cu_sem_train_cases = make([]*cuda.Buffer, *config.population_size)
 	cu_sem_train_cases_new = make([]*cuda.Buffer, *config.population_size)
@@ -1384,10 +1209,6 @@ func main() {
 		ctx.Synchronize() // Check for errors
 		log.Println("CUDA initialized successfully")
 
-		// Allocate room for dataset and copy
-		//	var tmp_set []cFloat64
-		//	cu_set, tmp_set = alloc_cFloat64((nrow + nrow_test) * (nvar + 1))
-
 		// Dataset is never modified, so there is no advantage in using Unified Memory
 		var tmp_set []cFloat64 = make([]cFloat64, (nrow+nrow_test)*(nvar+1))
 		cu_set = cuda.NewBuffer(int(C.sizeof_double * (nrow + nrow_test) * (nvar + 1))) // Storage for dataset
@@ -1399,10 +1220,6 @@ func main() {
 			tmp_set[i*(nvar+1)+nvar] = cFloat64(set[i].y_value)
 		}
 		cu_set.FromHost(unsafe.Pointer(&tmp_set[0]))
-
-		// Allocate room for symbols and copy
-		//	var tmp_sym_val []cFloat64
-		//	cu_sym_val, tmp_sym_val = alloc_cFloat64(len(symbols))
 
 		// Symbols are never modified, so there is no advantage in using Unified Memory
 		var tmp_sym_val = make([]cFloat64, len(symbols))
@@ -1418,10 +1235,6 @@ func main() {
 		cu_sym_val.FromHost(unsafe.Pointer(&tmp_sym_val[0]))
 
 		// Setup some temporary memory
-		/*
-			cu_tmp_sem_train, tmp_sem_train = alloc_cFloat64(nrow)
-			cu_tmp_sem_test, tmp_sem_test = alloc_cFloat64(nrow_test)
-		*/
 		cu_tmp_sem_train = cuda.NewBuffer(C.sizeof_double * nrow)
 		cu_tmp_sem_test = cuda.NewBuffer(C.sizeof_double * nrow_test)
 		cu_tmp_sem_tot1 = cuda.NewBuffer(C.sizeof_double * (nrow + nrow_test))
@@ -1501,5 +1314,4 @@ func main() {
 		fmt.Fprintln(executiontime, time.Since(start))
 	}
 	log.Println("Total elapsed time since start:", time.Since(start))
-	log.Println("Benchmark:", BenchResult("random_tree"), BenchResult("crossover"), BenchResult("mutation"))
 }
