@@ -219,13 +219,42 @@ const (
 	CMD_CROSSOVER
 )
 
-// Define a sink type that works like /dev/null
+// Define a sink type that works like /dev/null, but can be closed
 type sink int
 
 func (s sink) Close() error                { return nil }
 func (s sink) Write(p []byte) (int, error) { return len(p), nil }
 
 func init() {
+	// Look for the configuration file flag
+	for i := range os.Args[1:] {
+		s := os.Args[i]
+		// Flag could be "-config file", "-config=file", "--config file" or "--config=file"
+		if s[:7] == "-config" {
+			if len(s) == 7 {
+				// Configuration file is next argument
+				*config_file = os.Args[i+1]
+				break
+			} else if s[7] == '=' {
+				*config_file = s[7:]
+				break
+			} else {
+				fmt.Errorf("Cannot parse config flag, use -config or --config followed by file path")
+				os.Exit(1)
+			}
+		} else if s[:8] == "--config" {
+			if len(s) == 8 {
+				*config_file = os.Args[i+1]
+				break
+			} else if s[8] == '=' {
+				*config_file = s[8:]
+				break
+			} else {
+				fmt.Errorf("Cannot parse config flag, use -config or --config followed by file path")
+				os.Exit(1)
+			}
+		}
+	}
 	// Reading the config here allows to use a different config file path, as init is executed after variables initialization
 	// Read variables: if present in the config, they will override the defaults
 	if _, err := os.Stat(*config_file); os.IsNotExist(err) {
