@@ -791,7 +791,7 @@ func semantic_evaluate(el *Node, sem_size, sem_offs cInt) (cFloat64, Semantic) {
 			d += <-ch
 		}
 	}
-	d = d / cFloat64(nrow_test)
+	d = d / cFloat64(sem_size)
 	return d, val
 }
 
@@ -805,7 +805,7 @@ func semantic_evaluate_array(tree *[]cInt, sem_size, sem_offs cInt) (cFloat64, S
 			d += dist_func(set[i].y_value, res)
 		}
 	}
-	d = d / cFloat64(nrow_test)
+	d = d / cFloat64(sem_size)
 	return d, val
 }
 
