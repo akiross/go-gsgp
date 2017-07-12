@@ -833,6 +833,26 @@ func semantic_evaluate_array(tree *[]cInt, sem_size, sem_offs cInt) (cFloat64, S
 			val[i-sem_offs] = res
 			d += dist_func(set[i].y_value, res)
 		}
+	} else {
+		// Communication channel
+		ch := make(chan cFloat64)
+		// Create some workers to work on chunks of rows
+		nw := cInt(runtime.NumCPU())
+		for w := cInt(0); w < nw; w++ {
+			go func(id cInt) {
+				var wd cFloat64
+				// Each worker works on a separated share
+				for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
+					res := eval_arrays(*tree, 0, i)
+					val[i-sem_offs] = res
+					wd += dist_func(set[i].y_value, res)
+				}
+				ch <- wd // Send partial results
+			}(w)
+		}
+		for w := cInt(0); w < nw; w++ {
+			d += <-ch
+		}
 	}
 	d = d / cFloat64(sem_size)
 	return d, val
