@@ -85,6 +85,7 @@ type Config struct {
 	path_in, path_test     *string  // Paths for input data files
 	rng_seed               *int64   // Seed for random numbers
 	//use_goroutines         *bool    // Flag that enables concurrent computation
+	num_workers       *int    // Number of concurrent workers
 	use_cuda          *bool   // Flag that enables CUDA computation
 	of_train, of_test *string // Paths for output fitness files
 	of_timing         *string // Path for file with timings
@@ -140,6 +141,7 @@ var (
 		path_test:              flag.String("test_file", "", "Path for the test file"),
 		rng_seed:               flag.Int64("seed", time.Now().UnixNano(), "Specify a seed for the RNG (uses time by default)"),
 		//use_goroutines:         flag.Bool("use_goroutines", false, "Enable goroutines in evaluation of fitness"),
+		num_workers:   flag.Int("num_workers", runtime.NumCPU(), "Number of concurrent workers"),
 		use_cuda:      flag.Bool("use_cuda", false, "Enable CUDA in generation of random trees"),
 		of_train:      flag.String("out_file_train_fitness", "fitnesstrain.txt", "Path for the output file with train fitness data"),
 		of_test:       flag.String("out_file_test_fitness", "fitnesstest.txt", "Path for the output file with test fitness data"),
@@ -231,6 +233,9 @@ func init() {
 	// Look for the configuration file flag
 	for i := range os.Args[1:] {
 		s := os.Args[i]
+		if len(s) < 7 {
+			continue // Skip flags that are not long enough
+		}
 		// Flag could be "-config file", "-config=file", "--config file" or "--config=file"
 		if s[:7] == "-config" {
 			if len(s) == 7 {
@@ -849,106 +854,120 @@ func go_accumulate2(f func(cInt, cInt, chan cFloat64, chan cFloat64)) (cFloat64,
 	return v1, v2
 }
 
-func pararun(num_workers, num_elems int, f func(id, start, end cInt)) {
-	// Number of worker goroutines
-	nw := num_workers
-	var wg sync.WaitGroup
-	block := (num_elems + nw - 1) / nw
-	wg.Add(num_workers)
-	for w := 0; w < nw; w++ {
-		start := w * block
-		end := (w + 1) * block
-		go func(id, start, end int) {
-			if end > num_elems {
-				end = num_elems
-			}
-			f(cInt(id), cInt(start), cInt(end))
-			wg.Done()
-		}(w, start, end)
-	}
-	wg.Wait()
-}
-
 func semantic_evaluate_array(tree *[]cInt, sem_size, sem_offs cInt) (cFloat64, Semantic) {
-	val := make(Semantic, sem_size) // Array with semantic
+	if true {
+		val := make(Semantic, sem_size) // Array with semantic to be computed
+		for i := sem_offs; i < sem_size+sem_offs; i++ {
+			val[i-sem_offs] = eval_arrays(*tree, 0, i)
+		}
+		d, _, _ := fitness_of_semantic_train(val, sem_size, sem_offs)
+		return d, val
+	} else {
+		/* New (broken?) code
+		val := make(Semantic, sem_size)   // Array with semantic to be computed
+		nw := cInt(*config.num_workers)   // Number of worker goroutines
+		block := (sem_size + nw - 1) / nw // Size of a worker block
+		var wg sync.WaitGroup             // Wait group for workers
 
-	// Number of worker goroutines
-	nw := cInt(runtime.NumCPU())
-	// Temporary accumulators
-	var acc1 = make([]cFloat64, nw)
-	var acc2 = make([]cFloat64, nw)
+		for w := cInt(0); w < nw; w++ {
+			start := cInt(w * block)
+			end := cInt((w + 1) * block)
+			wg.Add(1)
+			go func(id, start, end cInt) {
+				if end > sem_size {
+					end = sem_size
+				}
+				for i := start; i < end; i++ {
+					val[i-sem_offs] = eval_arrays(*tree, 0, i)
+				}
+				wg.Done()
+			}(w, start+sem_offs, end+sem_offs)
+		}
+		wg.Wait()
 
-	var wg sync.WaitGroup
+		d, _, _ := fitness_of_semantic_train(val, sem_size, sem_offs)
+		*/
+		val := make(Semantic, sem_size) // Array with semantic
 
-	// Accumulate average output and average target values
-	var avg_out, avg_tar cFloat64
-	block := (sem_size + nw - 1) / nw
-	for w := cInt(0); w < nw; w++ {
-		start := cInt(w * block)
-		end := cInt((w + 1) * block)
-		wg.Add(1)
-		go func(id, start, end cInt) {
-			if end > sem_size {
-				end = sem_size
-			}
-			for i := start; i < end; i++ {
-				res := eval_arrays(*tree, 0, i)
-				val[i-sem_offs] = res
-				acc1[id] += res
-				acc2[id] += set[i].y_value
-			}
-			wg.Done()
-		}(w, start+sem_offs, end+sem_offs)
-	}
-	wg.Wait()
+		// Number of worker goroutines
+		nw := cInt(runtime.NumCPU())
+		// Temporary accumulators
+		var acc1 = make([]cFloat64, nw)
+		var acc2 = make([]cFloat64, nw)
 
-	/*
-		avg_out, avg_tar := go_accumulate2(func(id, nw cInt, co, ct chan cFloat64) {
-			var ao, at cFloat64 // Output and target accumulators
+		var wg sync.WaitGroup
+
+		// Accumulate average output and average target values
+		var avg_out, avg_tar cFloat64
+		block := (sem_size + nw - 1) / nw
+		for w := cInt(0); w < nw; w++ {
+			start := cInt(w * block)
+			end := cInt((w + 1) * block)
+			wg.Add(1)
+			go func(id, start, end cInt) {
+				if end > sem_size {
+					end = sem_size
+				}
+				for i := start; i < end; i++ {
+					res := eval_arrays(*tree, 0, i)
+					val[i-sem_offs] = res
+					acc1[id] += res
+					acc2[id] += set[i].y_value
+				}
+				wg.Done()
+			}(w, start+sem_offs, end+sem_offs)
+		}
+		wg.Wait()
+
+		/*
+			avg_out, avg_tar := go_accumulate2(func(id, nw cInt, co, ct chan cFloat64) {
+				var ao, at cFloat64 // Output and target accumulators
+				// Each worker works on a separated share
+				for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
+					res := eval_arrays(*tree, 0, i)
+					val[i-sem_offs] = res // Save computed value
+					ao += res
+					at += set[i].y_value
+				}
+				// Send accumulated values
+				co <- ao
+				ct <- at
+			})
+		*/
+
+		avg_out /= cFloat64(sem_size)
+		avg_tar /= cFloat64(sem_size)
+
+		// Compute numerator and denominator for linear scaling
+		num, den := go_accumulate2(func(id, nw cInt, cnum, cden chan cFloat64) {
+			var an, ad cFloat64
 			// Each worker works on a separated share
 			for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
-				res := eval_arrays(*tree, 0, i)
-				val[i-sem_offs] = res // Save computed value
-				ao += res
-				at += set[i].y_value
+				odiff := val[i-sem_offs] - avg_out
+				an += (set[i].y_value - avg_tar) * odiff
+				ad += odiff * odiff
 			}
 			// Send accumulated values
-			co <- ao
-			ct <- at
+			cnum <- an
+			cden <- ad
 		})
-	*/
 
-	avg_out /= cFloat64(sem_size)
-	avg_tar /= cFloat64(sem_size)
+		b := num / den
+		a := avg_tar - b*avg_out
 
-	// Compute numerator and denominator for linear scaling
-	num, den := go_accumulate2(func(id, nw cInt, cnum, cden chan cFloat64) {
-		var an, ad cFloat64
-		// Each worker works on a separated share
-		for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
-			odiff := val[i-sem_offs] - avg_out
-			an += (set[i].y_value - avg_tar) * odiff
-			ad += odiff * odiff
-		}
-		// Send accumulated values
-		cnum <- an
-		cden <- ad
-	})
+		// Accumulate distance between scaled output and target
+		d := go_accumulate1(func(id, nw cInt, ch chan cFloat64) {
+			var ad cFloat64
+			for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
+				ad += dist_func(set[i].y_value, a+b*val[i-sem_offs])
+			}
+			ch <- ad
+		})
 
-	b := num / den
-	a := avg_tar - b*avg_out
+		d = d / cFloat64(sem_size)
+		return d, val
 
-	// Accumulate distance between scaled output and target
-	d := go_accumulate1(func(id, nw cInt, ch chan cFloat64) {
-		var ad cFloat64
-		for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
-			ad += dist_func(set[i].y_value, a+b*val[i-sem_offs])
-		}
-		ch <- ad
-	})
-
-	d = d / cFloat64(sem_size)
-	return d, val
+	}
 }
 
 // Implements a tournament selection procedure
@@ -995,6 +1014,8 @@ func geometric_semantic_crossover(i cInt) {
 		// Replace the individual with the crossover of two parents
 		p1 := tournament_selection()
 		p2 := tournament_selection()
+		//log.Println("Albero generato:", rt)
+		//log.Println("Vincitori torneo:", p1, p2)
 
 		if !*config.use_cuda {
 			var ls_a, ls_b cFloat64
@@ -1053,6 +1074,8 @@ func geometric_semantic_crossover(i cInt) {
 			fit_test_new[i] = cFloat64(cu_tmp_d2.ToFloat64())
 		}
 	} else {
+		//log.Println("Crossover del migliore, copio e basta")
+
 		// The best individual will not be changed
 		copy(sem_train_cases_new[i], sem_train_cases[i])
 		copy(sem_test_cases_new[i], sem_test_cases[i])
@@ -1074,6 +1097,10 @@ func geometric_semantic_mutation(i cInt) {
 		// Create two random trees and copy it to unified memory
 		rt1 := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
 		rt2 := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
+
+		//log.Println("Mutazione con step:", mut_step)
+		//log.Println("Mutazione albero 1:", rt1)
+		//log.Println("Mutazione albero 2:", rt2)
 
 		if !*config.use_cuda {
 			var ls_a, ls_b cFloat64
@@ -1128,57 +1155,208 @@ func geometric_semantic_mutation(i cInt) {
 // Mean Squared Difference between the semantic and the dataset.
 // Only sem_size elements, starting from sem_offs, will be considered in the computation
 func fitness_of_semantic_train(sem Semantic, sem_size, sem_offs cInt) (d, a, b cFloat64) {
-	// Accumulate output and target
-	avg_out, avg_tar := go_accumulate2(func(id, nw cInt, co, ct chan cFloat64) {
-		var ao, at cFloat64
-		for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
-			ao += sem[i-sem_offs]
-			at += set[i].y_value
+	switch 0 {
+	case 0: // Serial code
+		var avg_out, avg_tar cFloat64
+		for i := sem_offs; i < sem_size+sem_offs; i++ {
+			avg_out += sem[i-sem_offs]
+			avg_tar += set[i].y_value
 		}
-		co <- ao
-		ct <- at
-	})
+		avg_out /= cFloat64(sem_size)
+		avg_tar /= cFloat64(sem_size)
 
-	avg_out /= cFloat64(sem_size)
-	avg_tar /= cFloat64(sem_size)
-
-	// Compute numerator and denominator for linear scaling
-	num, den := go_accumulate2(func(id, nw cInt, cnum, cden chan cFloat64) {
-		var an, ad cFloat64
-		for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
+		var num, den cFloat64
+		for i := sem_offs; i < sem_offs+sem_size; i++ {
 			odiff := sem[i-sem_offs] - avg_out
-			an += (set[i].y_value - avg_tar) * odiff
-			ad += odiff * odiff
+			num += (set[i].y_value - avg_tar) * odiff
+			den += odiff * odiff
 		}
-		cnum <- an
-		cden <- ad
-	})
+		b = num / den
+		a = avg_tar - b*avg_out
 
-	b = num / den
-	a = avg_tar - b*avg_out
-
-	// Accumulate distance between scaled output and target
-	d = go_accumulate1(func(id, nw cInt, ch chan cFloat64) {
-		var ad cFloat64
-		for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
-			ad += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
+		var d cFloat64
+		for i := sem_offs; i < sem_offs+sem_size; i++ {
+			d += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
 		}
-		ch <- ad
-	})
+		d = d / cFloat64(sem_size)
+		return d, a, b
+	case 1:
+		// Accumulate output and target
+		avg_out, avg_tar := go_accumulate2(func(id, nw cInt, co, ct chan cFloat64) {
+			var ao, at cFloat64
+			for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
+				ao += sem[i-sem_offs]
+				at += set[i].y_value
+			}
+			co <- ao
+			ct <- at
+		})
 
-	d = d / cFloat64(sem_size)
-	return d, a, b
+		avg_out /= cFloat64(sem_size)
+		avg_tar /= cFloat64(sem_size)
+
+		// Compute numerator and denominator for linear scaling
+		num, den := go_accumulate2(func(id, nw cInt, cnum, cden chan cFloat64) {
+			var an, ad cFloat64
+			for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
+				odiff := sem[i-sem_offs] - avg_out
+				an += (set[i].y_value - avg_tar) * odiff
+				ad += odiff * odiff
+			}
+			cnum <- an
+			cden <- ad
+		})
+
+		b = num / den
+		a = avg_tar - b*avg_out
+
+		// Accumulate distance between scaled output and target
+		d = go_accumulate1(func(id, nw cInt, ch chan cFloat64) {
+			var ad cFloat64
+			for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
+				ad += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
+			}
+			ch <- ad
+		})
+
+		d = d / cFloat64(sem_size)
+		return d, a, b
+	default:
+		nw := cInt(*config.num_workers)   // Number of worker goroutines
+		block := (sem_size + nw - 1) / nw // Size of a worker block
+		var wg sync.WaitGroup             // Wait group for workers
+
+		// Temporary accumulators
+		var acc1 = make([]cFloat64, nw)
+		var acc2 = make([]cFloat64, nw)
+
+		// Accumulate average output and average target values
+		for w := cInt(0); w < nw; w++ {
+			start := cInt(w * block)
+			end := cInt((w + 1) * block)
+			wg.Add(1)
+			go func(id, start, end cInt) {
+				if end > sem_size {
+					end = sem_size
+				}
+				for i := start; i < end; i++ {
+					acc1[id] += sem[i-sem_offs]
+					acc2[id] += set[i].y_value
+				}
+				wg.Done()
+			}(w, start+sem_offs, end+sem_offs)
+		}
+		wg.Wait()
+
+		var avg_out, avg_tar cFloat64
+		for i := cInt(0); i < nw; i++ {
+			avg_out += acc1[i]
+			avg_tar += acc2[i]
+		}
+
+		avg_out /= cFloat64(sem_size)
+		avg_tar /= cFloat64(sem_size)
+
+		for w := cInt(0); w < nw; w++ {
+			start := cInt(w * block)
+			end := cInt((w + 1) * block)
+			wg.Add(1)
+			go func(id, start, end cInt) {
+				if end > sem_size {
+					end = sem_size
+				}
+				acc1[id] = 0
+				acc2[id] = 0
+				for i := start; i < end; i++ {
+					odiff := sem[i-sem_offs] - avg_out
+					acc1[id] += (set[i].y_value - avg_tar) * odiff
+					acc2[id] += odiff * odiff
+				}
+				wg.Done()
+			}(w, start+sem_offs, end+sem_offs)
+		}
+		wg.Wait()
+
+		var num, den cFloat64
+		for i := cInt(0); i < nw; i++ {
+			num += acc1[i]
+			den += acc2[i]
+		}
+
+		b = num / den
+		a = avg_tar - b*avg_out
+
+		// Accumulate distance between scaled output and target
+		for w := cInt(0); w < nw; w++ {
+			start := cInt(w * block)
+			end := cInt((w + 1) * block)
+			wg.Add(1)
+			go func(id, start, end cInt) {
+				if end > sem_size {
+					end = sem_size
+				}
+				acc1[id] = 0
+				for i := start; i < end; i++ {
+					acc1[id] += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
+				}
+				wg.Done()
+			}(w, start+sem_offs, end+sem_offs)
+		}
+
+		for i := range acc1 {
+			d += acc1[i]
+		}
+		d = d / cFloat64(sem_size)
+		return d, a, b
+	}
 }
 
 func fitness_of_semantic_test(sem Semantic, sem_size, sem_offs cInt, a, b cFloat64) cFloat64 {
-	d := go_accumulate1(func(id, nw cInt, ch chan cFloat64) {
-		var ad cFloat64
-		for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
-			ad += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
+	switch 0 {
+	case 0: // SINGLE THREAD
+		var d cFloat64
+		for i := sem_offs; i < sem_size+sem_offs; i++ {
+			d += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
 		}
-		ch <- ad
-	})
-	return d / cFloat64(sem_size)
+		return d
+	case 1: // Using accumulators
+		d := go_accumulate1(func(id, nw cInt, ch chan cFloat64) {
+			var ad cFloat64
+			for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
+				ad += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
+			}
+			ch <- ad
+		})
+		return d / cFloat64(sem_size)
+	default:
+		nw := cInt(*config.num_workers)   // Number of worker goroutines
+		block := (sem_size + nw - 1) / nw // Size of a worker block
+		var wg sync.WaitGroup             // Wait group for workers
+		var ad = make([]cFloat64, nw)     // Accumulator
+
+		for w := cInt(0); w < nw; w++ {
+			start := cInt(w * block)
+			end := cInt((w + 1) * block)
+			wg.Add(1)
+			go func(id, start, end cInt) {
+				if end > sem_size {
+					end = sem_size
+				}
+				for i := start; i < end; i++ {
+					ad[id] += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
+				}
+				wg.Done()
+			}(w, start+sem_offs, end+sem_offs)
+		}
+		wg.Wait()
+
+		var d cFloat64
+		for i := cInt(0); i < nw; i++ {
+			d += ad[i]
+		}
+
+		return d / cFloat64(sem_size)
+	}
 }
 
 // Finds the best individual in the population
@@ -1326,7 +1504,7 @@ func main() {
 	}
 
 	//if *config.use_goroutines {
-	log.Println("Using goroutines with", runtime.NumCPU(), "CPUs")
+	log.Println("Using goroutines with", *config.num_workers, "workers")
 	//}
 
 	var cuda_dist string // Which function to use in CUDA for distance
@@ -1489,13 +1667,17 @@ func main() {
 		log.Println("Generation", num_gen+1)
 		for k := 0; k < *config.population_size; k++ {
 			rand_num := rand.Float64()
+			//log.Println("Numero per decisione:", rand_num)
 			switch {
 			case rand_num < *config.p_crossover:
+				//log.Println("Eseguo crossover")
 				geometric_semantic_crossover(cInt(k))
 			case rand_num < *config.p_crossover+*config.p_mutation:
+				//log.Println("Eseguo mutazione")
 				reproduction(cInt(k))
 				geometric_semantic_mutation(cInt(k))
 			default:
+				//log.Println("Eseguo riproduzione")
 				reproduction(cInt(k))
 			}
 		}
