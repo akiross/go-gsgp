@@ -40,6 +40,7 @@ import (
 	"runtime/pprof"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unsafe"
 )
@@ -146,6 +147,7 @@ var (
 		error_measure: flag.String("error_measure", "MSE", "Error measures to use for fitness (MSE, MAE or MRE)"),
 	}
 	cpuprofile  = flag.String("cpuprofile", "", "Write CPU profile to file")
+	memprofile  = flag.String("memprofile", "", "Write memory profile to file")
 	showVersion = flag.Bool("version", false, "Show version")
 
 	NUM_FUNCTIONAL_SYMBOLS cInt // Number of functional symbols
@@ -847,23 +849,74 @@ func go_accumulate2(f func(cInt, cInt, chan cFloat64, chan cFloat64)) (cFloat64,
 	return v1, v2
 }
 
+func pararun(num_workers, num_elems int, f func(id, start, end cInt)) {
+	// Number of worker goroutines
+	nw := num_workers
+	var wg sync.WaitGroup
+	block := (num_elems + nw - 1) / nw
+	wg.Add(num_workers)
+	for w := 0; w < nw; w++ {
+		start := w * block
+		end := (w + 1) * block
+		go func(id, start, end int) {
+			if end > num_elems {
+				end = num_elems
+			}
+			f(cInt(id), cInt(start), cInt(end))
+			wg.Done()
+		}(w, start, end)
+	}
+	wg.Wait()
+}
+
 func semantic_evaluate_array(tree *[]cInt, sem_size, sem_offs cInt) (cFloat64, Semantic) {
 	val := make(Semantic, sem_size) // Array with semantic
 
+	// Number of worker goroutines
+	nw := cInt(runtime.NumCPU())
+	// Temporary accumulators
+	var acc1 = make([]cFloat64, nw)
+	var acc2 = make([]cFloat64, nw)
+
+	var wg sync.WaitGroup
+
 	// Accumulate average output and average target values
-	avg_out, avg_tar := go_accumulate2(func(id, nw cInt, co, ct chan cFloat64) {
-		var ao, at cFloat64 // Output and target accumulators
-		// Each worker works on a separated share
-		for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
-			res := eval_arrays(*tree, 0, i)
-			val[i-sem_offs] = res // Save computed value
-			ao += res
-			at += set[i].y_value
-		}
-		// Send accumulated values
-		co <- ao
-		ct <- at
-	})
+	var avg_out, avg_tar cFloat64
+	block := (sem_size + nw - 1) / nw
+	for w := cInt(0); w < nw; w++ {
+		start := cInt(w * block)
+		end := cInt((w + 1) * block)
+		wg.Add(1)
+		go func(id, start, end cInt) {
+			if end > sem_size {
+				end = sem_size
+			}
+			for i := start; i < end; i++ {
+				res := eval_arrays(*tree, 0, i)
+				val[i-sem_offs] = res
+				acc1[id] += res
+				acc2[id] += set[i].y_value
+			}
+			wg.Done()
+		}(w, start+sem_offs, end+sem_offs)
+	}
+	wg.Wait()
+
+	/*
+		avg_out, avg_tar := go_accumulate2(func(id, nw cInt, co, ct chan cFloat64) {
+			var ao, at cFloat64 // Output and target accumulators
+			// Each worker works on a separated share
+			for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
+				res := eval_arrays(*tree, 0, i)
+				val[i-sem_offs] = res // Save computed value
+				ao += res
+				at += set[i].y_value
+			}
+			// Send accumulated values
+			co <- ao
+			ct <- at
+		})
+	*/
 
 	avg_out /= cFloat64(sem_size)
 	avg_tar /= cFloat64(sem_size)
@@ -1457,4 +1510,13 @@ func main() {
 		fmt.Fprintln(executiontime, time.Since(start))
 	}
 	log.Println("Total elapsed time since start:", time.Since(start))
+
+	if *memprofile != "" {
+		f, err := os.Create(*memprofile)
+		if err != nil {
+			panic(err)
+		}
+		pprof.WriteHeapProfile(f)
+		f.Close()
+	}
 }
