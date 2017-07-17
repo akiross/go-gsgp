@@ -34,7 +34,6 @@ import (
 	"runtime/pprof"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -684,38 +683,12 @@ func terminal_value(i cInt, sym *Symbol) cFloat64 {
 	}
 }
 
+/*
 // Evaluates evaluates a tree on the i-th input instance
 func eval(tree *Node, i cInt) cFloat64 {
-	switch {
-	case tree.root == nil:
-		// If root is nil, this tree has been created by parse_sem
-		return tree.children[i].root.value
-	case tree.root.isFunc:
-		switch tree.root.name {
-		case "+":
-			return eval(tree.children[0], i) + eval(tree.children[1], i)
-		case "-":
-			return eval(tree.children[0], i) - eval(tree.children[1], i)
-		case "*":
-			return eval(tree.children[0], i) * eval(tree.children[1], i)
-		case "/":
-			return protected_division(eval(tree.children[0], i), eval(tree.children[1], i))
-		case "sqrt":
-			v := eval(tree.children[0], i)
-			if v < 0 {
-				return cFloat64(math.Sqrt(float64(-v)))
-			} else {
-				return cFloat64(math.Sqrt(float64(v)))
-			}
-		//case "^":
-		//	return math.Pow(eval(tree.children[0], i), eval(tree.children[1], i))
-		default:
-			panic("Undefined symbol: '" + tree.root.name + "'")
-		}
-	default:
-		return terminal_value(i, tree.root) // Root points to a terminal
-	}
+	return eval_arrays(tree_to_array(tree), 0, i)
 }
+*/
 
 func eval_arrays(tree []cInt, start cInt, i cInt) cFloat64 {
 	switch {
@@ -769,150 +742,13 @@ func semantic_evaluate(el *Node, sem_size, sem_offs cInt) (cFloat64, Semantic) {
 	return semantic_evaluate_array(&arr, sem_size, sem_offs)
 }
 
-// Use worker goroutines to accumulate a value passed on channel
-func go_accumulate1(f func(cInt, cInt, chan cFloat64)) cFloat64 {
-	nw := cInt(runtime.NumCPU())  // Number of workers
-	ch := make(chan cFloat64, nw) // Channel for partial output
-	for w := cInt(0); w < nw; w++ {
-		go f(w, nw, ch)
-	}
-	var v1 cFloat64
-	for w := cInt(0); w < nw; w++ {
-		v1 += <-ch
-	}
-	return v1
-}
-
-// Accumulate two values in parallel
-func go_accumulate2(f func(cInt, cInt, chan cFloat64, chan cFloat64)) (cFloat64, cFloat64) {
-	nw := cInt(runtime.NumCPU())  // Number of workers
-	c1 := make(chan cFloat64, nw) // Channel for partial output
-	c2 := make(chan cFloat64, nw) // Channel for partial output
-	for w := cInt(0); w < nw; w++ {
-		go f(w, nw, c1, c2)
-	}
-	var v1, v2 cFloat64
-	for w := cInt(0); w < nw; w++ {
-		v1 += <-c1
-		v2 += <-c2
-	}
-	return v1, v2
-}
-
 func semantic_evaluate_array(tree *[]cInt, sem_size, sem_offs cInt) (cFloat64, Semantic) {
-	if true {
-		val := make(Semantic, sem_size) // Array with semantic to be computed
-		for i := sem_offs; i < sem_size+sem_offs; i++ {
-			val[i-sem_offs] = eval_arrays(*tree, 0, i)
-		}
-		d, _, _ := fitness_of_semantic_train(val, sem_size, sem_offs)
-		return d, val
-	} else {
-		/* New (broken?) code
-		val := make(Semantic, sem_size)   // Array with semantic to be computed
-		nw := cInt(*config.num_workers)   // Number of worker goroutines
-		block := (sem_size + nw - 1) / nw // Size of a worker block
-		var wg sync.WaitGroup             // Wait group for workers
-
-		for w := cInt(0); w < nw; w++ {
-			start := cInt(w * block)
-			end := cInt((w + 1) * block)
-			wg.Add(1)
-			go func(id, start, end cInt) {
-				if end > sem_size {
-					end = sem_size
-				}
-				for i := start; i < end; i++ {
-					val[i-sem_offs] = eval_arrays(*tree, 0, i)
-				}
-				wg.Done()
-			}(w, start+sem_offs, end+sem_offs)
-		}
-		wg.Wait()
-
-		d, _, _ := fitness_of_semantic_train(val, sem_size, sem_offs)
-		*/
-		val := make(Semantic, sem_size) // Array with semantic
-
-		// Number of worker goroutines
-		nw := cInt(runtime.NumCPU())
-		// Temporary accumulators
-		var acc1 = make([]cFloat64, nw)
-		var acc2 = make([]cFloat64, nw)
-
-		var wg sync.WaitGroup
-
-		// Accumulate average output and average target values
-		var avg_out, avg_tar cFloat64
-		block := (sem_size + nw - 1) / nw
-		for w := cInt(0); w < nw; w++ {
-			start := cInt(w * block)
-			end := cInt((w + 1) * block)
-			wg.Add(1)
-			go func(id, start, end cInt) {
-				if end > sem_size {
-					end = sem_size
-				}
-				for i := start; i < end; i++ {
-					res := eval_arrays(*tree, 0, i)
-					val[i-sem_offs] = res
-					acc1[id] += res
-					acc2[id] += set[i].y_value
-				}
-				wg.Done()
-			}(w, start+sem_offs, end+sem_offs)
-		}
-		wg.Wait()
-
-		/*
-			avg_out, avg_tar := go_accumulate2(func(id, nw cInt, co, ct chan cFloat64) {
-				var ao, at cFloat64 // Output and target accumulators
-				// Each worker works on a separated share
-				for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
-					res := eval_arrays(*tree, 0, i)
-					val[i-sem_offs] = res // Save computed value
-					ao += res
-					at += set[i].y_value
-				}
-				// Send accumulated values
-				co <- ao
-				ct <- at
-			})
-		*/
-
-		avg_out /= cFloat64(sem_size)
-		avg_tar /= cFloat64(sem_size)
-
-		// Compute numerator and denominator for linear scaling
-		num, den := go_accumulate2(func(id, nw cInt, cnum, cden chan cFloat64) {
-			var an, ad cFloat64
-			// Each worker works on a separated share
-			for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
-				odiff := val[i-sem_offs] - avg_out
-				an += (set[i].y_value - avg_tar) * odiff
-				ad += odiff * odiff
-			}
-			// Send accumulated values
-			cnum <- an
-			cden <- ad
-		})
-
-		b := num / den
-		a := avg_tar - b*avg_out
-
-		// Accumulate distance between scaled output and target
-		d := go_accumulate1(func(id, nw cInt, ch chan cFloat64) {
-			var ad cFloat64
-			for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
-				ad += dist_func(set[i].y_value, a+b*val[i-sem_offs])
-			}
-			ch <- ad
-		})
-
-		d = d / cFloat64(sem_size)
-		return d, val
-
+	val := make(Semantic, sem_size) // Array with semantic to be computed
+	for i := sem_offs; i < sem_size+sem_offs; i++ {
+		val[i-sem_offs] = eval_arrays(*tree, 0, i)
 	}
+	d, _, _ := fitness_of_semantic_train(val, sem_size, sem_offs)
+	return d, val
 }
 
 // Implements a tournament selection procedure
@@ -1028,208 +864,36 @@ func geometric_semantic_mutation(i cInt) {
 // Mean Squared Difference between the semantic and the dataset.
 // Only sem_size elements, starting from sem_offs, will be considered in the computation
 func fitness_of_semantic_train(sem Semantic, sem_size, sem_offs cInt) (d, a, b cFloat64) {
-	switch 0 {
-	case 0: // Serial code
-		var avg_out, avg_tar cFloat64
-		for i := sem_offs; i < sem_size+sem_offs; i++ {
-			avg_out += sem[i-sem_offs]
-			avg_tar += set[i].y_value
-		}
-		avg_out /= cFloat64(sem_size)
-		avg_tar /= cFloat64(sem_size)
-
-		var num, den cFloat64
-		for i := sem_offs; i < sem_offs+sem_size; i++ {
-			odiff := sem[i-sem_offs] - avg_out
-			num += (set[i].y_value - avg_tar) * odiff
-			den += odiff * odiff
-		}
-		b = num / den
-		a = avg_tar - b*avg_out
-
-		var d cFloat64
-		for i := sem_offs; i < sem_offs+sem_size; i++ {
-			d += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
-		}
-		d = d / cFloat64(sem_size)
-		return d, a, b
-	case 1:
-		// Accumulate output and target
-		avg_out, avg_tar := go_accumulate2(func(id, nw cInt, co, ct chan cFloat64) {
-			var ao, at cFloat64
-			for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
-				ao += sem[i-sem_offs]
-				at += set[i].y_value
-			}
-			co <- ao
-			ct <- at
-		})
-
-		avg_out /= cFloat64(sem_size)
-		avg_tar /= cFloat64(sem_size)
-
-		// Compute numerator and denominator for linear scaling
-		num, den := go_accumulate2(func(id, nw cInt, cnum, cden chan cFloat64) {
-			var an, ad cFloat64
-			for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
-				odiff := sem[i-sem_offs] - avg_out
-				an += (set[i].y_value - avg_tar) * odiff
-				ad += odiff * odiff
-			}
-			cnum <- an
-			cden <- ad
-		})
-
-		b = num / den
-		a = avg_tar - b*avg_out
-
-		// Accumulate distance between scaled output and target
-		d = go_accumulate1(func(id, nw cInt, ch chan cFloat64) {
-			var ad cFloat64
-			for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
-				ad += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
-			}
-			ch <- ad
-		})
-
-		d = d / cFloat64(sem_size)
-		return d, a, b
-	default:
-		nw := cInt(*config.num_workers)   // Number of worker goroutines
-		block := (sem_size + nw - 1) / nw // Size of a worker block
-		var wg sync.WaitGroup             // Wait group for workers
-
-		// Temporary accumulators
-		var acc1 = make([]cFloat64, nw)
-		var acc2 = make([]cFloat64, nw)
-
-		// Accumulate average output and average target values
-		for w := cInt(0); w < nw; w++ {
-			start := cInt(w * block)
-			end := cInt((w + 1) * block)
-			wg.Add(1)
-			go func(id, start, end cInt) {
-				if end > sem_size {
-					end = sem_size
-				}
-				for i := start; i < end; i++ {
-					acc1[id] += sem[i-sem_offs]
-					acc2[id] += set[i].y_value
-				}
-				wg.Done()
-			}(w, start+sem_offs, end+sem_offs)
-		}
-		wg.Wait()
-
-		var avg_out, avg_tar cFloat64
-		for i := cInt(0); i < nw; i++ {
-			avg_out += acc1[i]
-			avg_tar += acc2[i]
-		}
-
-		avg_out /= cFloat64(sem_size)
-		avg_tar /= cFloat64(sem_size)
-
-		for w := cInt(0); w < nw; w++ {
-			start := cInt(w * block)
-			end := cInt((w + 1) * block)
-			wg.Add(1)
-			go func(id, start, end cInt) {
-				if end > sem_size {
-					end = sem_size
-				}
-				acc1[id] = 0
-				acc2[id] = 0
-				for i := start; i < end; i++ {
-					odiff := sem[i-sem_offs] - avg_out
-					acc1[id] += (set[i].y_value - avg_tar) * odiff
-					acc2[id] += odiff * odiff
-				}
-				wg.Done()
-			}(w, start+sem_offs, end+sem_offs)
-		}
-		wg.Wait()
-
-		var num, den cFloat64
-		for i := cInt(0); i < nw; i++ {
-			num += acc1[i]
-			den += acc2[i]
-		}
-
-		b = num / den
-		a = avg_tar - b*avg_out
-
-		// Accumulate distance between scaled output and target
-		for w := cInt(0); w < nw; w++ {
-			start := cInt(w * block)
-			end := cInt((w + 1) * block)
-			wg.Add(1)
-			go func(id, start, end cInt) {
-				if end > sem_size {
-					end = sem_size
-				}
-				acc1[id] = 0
-				for i := start; i < end; i++ {
-					acc1[id] += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
-				}
-				wg.Done()
-			}(w, start+sem_offs, end+sem_offs)
-		}
-
-		for i := range acc1 {
-			d += acc1[i]
-		}
-		d = d / cFloat64(sem_size)
-		return d, a, b
+	var avg_out, avg_tar cFloat64
+	for i := sem_offs; i < sem_size+sem_offs; i++ {
+		avg_out += sem[i-sem_offs]
+		avg_tar += set[i].y_value
 	}
+	avg_out /= cFloat64(sem_size)
+	avg_tar /= cFloat64(sem_size)
+
+	var num, den cFloat64
+	for i := sem_offs; i < sem_offs+sem_size; i++ {
+		odiff := sem[i-sem_offs] - avg_out
+		num += (set[i].y_value - avg_tar) * odiff
+		den += odiff * odiff
+	}
+	b = num / den
+	a = avg_tar - b*avg_out
+
+	for i := sem_offs; i < sem_offs+sem_size; i++ {
+		d += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
+	}
+	d = d / cFloat64(sem_size)
+	return d, a, b
 }
 
 func fitness_of_semantic_test(sem Semantic, sem_size, sem_offs cInt, a, b cFloat64) cFloat64 {
-	switch 0 {
-	case 0: // SINGLE THREAD
-		var d cFloat64
-		for i := sem_offs; i < sem_size+sem_offs; i++ {
-			d += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
-		}
-		return d
-	case 1: // Using accumulators
-		d := go_accumulate1(func(id, nw cInt, ch chan cFloat64) {
-			var ad cFloat64
-			for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
-				ad += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
-			}
-			ch <- ad
-		})
-		return d / cFloat64(sem_size)
-	default:
-		nw := cInt(*config.num_workers)   // Number of worker goroutines
-		block := (sem_size + nw - 1) / nw // Size of a worker block
-		var wg sync.WaitGroup             // Wait group for workers
-		var ad = make([]cFloat64, nw)     // Accumulator
-
-		for w := cInt(0); w < nw; w++ {
-			start := cInt(w * block)
-			end := cInt((w + 1) * block)
-			wg.Add(1)
-			go func(id, start, end cInt) {
-				if end > sem_size {
-					end = sem_size
-				}
-				for i := start; i < end; i++ {
-					ad[id] += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
-				}
-				wg.Done()
-			}(w, start+sem_offs, end+sem_offs)
-		}
-		wg.Wait()
-
-		var d cFloat64
-		for i := cInt(0); i < nw; i++ {
-			d += ad[i]
-		}
-
-		return d / cFloat64(sem_size)
+	var d cFloat64
+	for i := sem_offs; i < sem_size+sem_offs; i++ {
+		d += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
 	}
+	return d
 }
 
 // Finds the best individual in the population
