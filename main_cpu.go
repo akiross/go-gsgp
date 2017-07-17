@@ -1315,6 +1315,13 @@ func init_tables() {
 	sem_train_cases_new = make([]Semantic, *config.population_size)
 	sem_test_cases = make([]Semantic, *config.population_size)
 	sem_test_cases_new = make([]Semantic, *config.population_size)
+
+	for i := 0; i < *config.population_size; i++ {
+		sem_train_cases[i] = make(Semantic, nrow)
+		sem_train_cases_new[i] = make(Semantic, nrow)
+		sem_test_cases[i] = make(Semantic, nrow_test)
+		sem_test_cases_new[i] = make(Semantic, nrow_test)
+	}
 }
 
 func main() {
@@ -1414,7 +1421,7 @@ func main() {
 			//log.Println("Numero per decisione:", rand_num)
 			switch {
 			case rand_num < *config.p_crossover:
-				//log.Println("Eseguo crossover")
+				//log.Println("Eseguo crossover di individuo", k, *config.population_size)
 				geometric_semantic_crossover(cInt(k))
 			case rand_num < *config.p_crossover+*config.p_mutation:
 				//log.Println("Eseguo mutazione")
