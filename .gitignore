@@ -1,4 +1,7 @@
 go-gsgp
+main_cpu
+main_gpu
+*.prof
 execution_time.txt
 fitnesstest.txt
 fitnesstrain.txt
