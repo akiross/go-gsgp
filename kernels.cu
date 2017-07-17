@@ -139,7 +139,70 @@ double abs_diff(double a, double b) { return abs(a - b); }
 extern "C" __device__
 double rel_abs_diff(double a, double b) { return abs (a - b) / a; }
 
+extern "C" __global__
+void sem_copy(double *dest_train, double *src_train, double *dest_test, double *src_test) {
+	int tig = blockIdx.x * blockDim.x + threadIdx.x;
+	if (tig < NROWS_TRAIN) {
+		dest_train[tig] = src_train[tig];
+	} else if (tig < NROWS_TOT) {
+		dest_test[tig-NROWS_TRAIN] = src_test[tig-NROWS_TRAIN];
+	}
+}
+
 // Runs with only 2 threads, for this unoptimized version
+extern "C" __global__
+void sem_fitness_train(double *set, double *sem_train, double *out_fit_train, double *out_ls_a, double *out_ls_b) {
+	int tig = blockIdx.x * blockDim.x + threadIdx.x;
+	if (tig == 0) {
+		double avg_out = 0; // Maybe initialize it to first value and start for loop with 1, faster?
+		double avg_tar = 0;
+		for (int i = 0; i < NROWS_TRAIN; i++) {
+			double yy = getDataset(NUM_VARIABLE_SYMBOLS, i, set);
+			avg_out += sem_train[i];
+			avg_tar += yy;
+		}
+
+		avg_out /= NROWS_TRAIN;
+		avg_tar /= NROWS_TRAIN;
+
+		double num = 0; // Same as above
+		double den = 0;
+		for (int i = 0; i < NROWS_TRAIN; i++) {
+			double yy = getDataset(NUM_VARIABLE_SYMBOLS, i, set);
+			double odiff = sem_train[i] - avg_out;
+			num += (yy - avg_tar) * odiff;
+			den += odiff * odiff;
+		}
+
+		double b = num / den;
+		double a = avg_tar - b * avg_out;
+		*out_ls_b = b;
+		*out_ls_a = a;
+
+		double d = 0; // Same as above
+		for (int i = 0; i < NROWS_TRAIN; i++) {
+			double yy = getDataset(NUM_VARIABLE_SYMBOLS, i, set);
+			d += ERROR_FUNC(yy, a + b * sem_train[i]);
+		}
+		*out_fit_train = d / double(NROWS_TRAIN);
+	}
+}
+
+extern "C" __global__
+void sem_fitness_test(double *set, double *sem_test, double *ls_a, double *ls_b, double *out_fit_test) {
+	int tig = blockIdx.x * blockDim.x + threadIdx.x;
+	if (tig == 0) {
+		double d = 0;
+		double a = *ls_a;
+		double b = *ls_b;
+		for (int i = 0; i < NROWS_TEST; i++) {
+			double yy = getDataset(NUM_VARIABLE_SYMBOLS, i+NROWS_TRAIN, set);
+			d += ERROR_FUNC(yy, a + b * sem_test[i]);
+		}
+		*out_fit_test = d / double(NROWS_TEST);
+	}
+}
+
 extern "C" __global__
 void sem_fitness(double *set, double *sem_train, double *sem_test, double *out_fit_train, double *out_fit_test) {
 	int tig = blockIdx.x * blockDim.x + threadIdx.x;

@@ -40,7 +40,6 @@ import (
 	"runtime/pprof"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unsafe"
 )
@@ -84,11 +83,10 @@ type Config struct {
 	minimization_problem   *bool    // True if we are minimizing, false if maximizing
 	path_in, path_test     *string  // Paths for input data files
 	rng_seed               *int64   // Seed for random numbers
-	//use_goroutines         *bool    // Flag that enables concurrent computation
-	num_workers       *int    // Number of concurrent workers
-	of_train, of_test *string // Paths for output fitness files
-	of_timing         *string // Path for file with timings
-	error_measure     *string // Error measure to use for fitness
+	num_workers            *int     // Number of concurrent workers
+	of_train, of_test      *string  // Paths for output fitness files
+	of_timing              *string  // Path for file with timings
+	error_measure          *string  // Error measure to use for fitness
 }
 
 // Symbol represents a symbol of the set T (terminal symbols) or F (functional symbols).
@@ -139,12 +137,11 @@ var (
 		path_in:                flag.String("train_file", "", "Path for the train file"),
 		path_test:              flag.String("test_file", "", "Path for the test file"),
 		rng_seed:               flag.Int64("seed", time.Now().UnixNano(), "Specify a seed for the RNG (uses time by default)"),
-		//use_goroutines:         flag.Bool("use_goroutines", false, "Enable goroutines in evaluation of fitness"),
-		num_workers:   flag.Int("num_workers", runtime.NumCPU(), "Number of concurrent workers"),
-		of_train:      flag.String("out_file_train_fitness", "fitnesstrain.txt", "Path for the output file with train fitness data"),
-		of_test:       flag.String("out_file_test_fitness", "fitnesstest.txt", "Path for the output file with test fitness data"),
-		of_timing:     flag.String("out_file_exec_timing", "execution_time.txt", "Path for the output file containing timings"),
-		error_measure: flag.String("error_measure", "MSE", "Error measures to use for fitness (MSE, MAE or MRE)"),
+		num_workers:            flag.Int("num_workers", runtime.NumCPU(), "Number of concurrent workers"),
+		of_train:               flag.String("out_file_train_fitness", "fitnesstrain.txt", "Path for the output file with train fitness data"),
+		of_test:                flag.String("out_file_test_fitness", "fitnesstest.txt", "Path for the output file with test fitness data"),
+		of_timing:              flag.String("out_file_exec_timing", "execution_time.txt", "Path for the output file containing timings"),
+		error_measure:          flag.String("error_measure", "MSE", "Error measures to use for fitness (MSE, MAE or MRE)"),
 	}
 	cpuprofile  = flag.String("cpuprofile", "", "Write CPU profile to file")
 	memprofile  = flag.String("memprofile", "", "Write memory profile to file")
@@ -172,11 +169,6 @@ var (
 	fit_new      []cFloat64 // Training fitness values at current generation g+1
 	fit_test_new []cFloat64 // Test fitness values at current generation g+1
 
-	sem_train_cases     []Semantic // Semantics of the population, computed on training set, at generation g
-	sem_train_cases_new []Semantic // Semantics of the population, computed on training set, at current generation g+1
-	sem_test_cases      []Semantic // Semantics of the population, computed on test set, at generation g
-	sem_test_cases_new  []Semantic // Semantics of the population, computed on test set, at current generation g+1
-
 	index_best cInt // Index of the best individual (where? sem_*?)
 
 	semchan chan Semantic // Channel to move semantics fromm device to host
@@ -187,14 +179,16 @@ var (
 	ctx *cuda.Context
 
 	cu_tpb     int = 256
-	cu_bgp_ds  int
+	cu_bpg_ds  int
 	cu_bpg_pop int
 
 	cu_prog         *cuda.Program
 	cu_mod          *cuda.Module
+	kern_copy       *cuda.Function
 	kern_eval_array *cuda.Function
 	kern_crossover  *cuda.Function
-	kern_fitness    *cuda.Function
+	kern_fit_train  *cuda.Function
+	kern_fit_test   *cuda.Function
 	kern_mutation   *cuda.Function
 
 	cu_set                 *cuda.Buffer
@@ -211,8 +205,8 @@ var (
 	cu_tmp_sem_tot1                   *cuda.Buffer
 	cu_tmp_sem_tot2                   *cuda.Buffer
 
-	cu_tmp_d1, cu_tmp_d2        *cuda.Buffer
-	tmp_sem_train, tmp_sem_test []cFloat64
+	cu_tmp_d1, cu_tmp_d2, cu_ls_a, cu_ls_b *cuda.Buffer
+	tmp_sem_train, tmp_sem_test            []cFloat64
 )
 
 const (
@@ -727,6 +721,7 @@ func terminal_value(i cInt, sym *Symbol) cFloat64 {
 	}
 }
 
+/*
 // Evaluates evaluates a tree on the i-th input instance
 func eval(tree *Node, i cInt) cFloat64 {
 	switch {
@@ -759,6 +754,7 @@ func eval(tree *Node, i cInt) cFloat64 {
 		return terminal_value(i, tree.root) // Root points to a terminal
 	}
 }
+*/
 
 func eval_arrays(tree []cInt, start cInt, i cInt) cFloat64 {
 	switch {
@@ -786,28 +782,14 @@ func eval_arrays(tree []cInt, start cInt, i cInt) cFloat64 {
 // Evaluate is called once, after individuals have been initialized for the first time.
 // This function fills fit using semantic_evaluate
 func evaluate(p *Population) {
-	f, s := semantic_evaluate(p.individuals[0], cInt(nrow), 0)
-	fit[0] = f
-	copy(sem_train_cases[0], s)
-
-	f, s = semantic_evaluate(p.individuals[0], cInt(nrow_test), cInt(nrow))
-	fit_test[0] = f
-	copy(sem_test_cases[0], s)
-
-	cu_sem_train_cases[0].FromHost(unsafe.Pointer(&sem_train_cases[0][0]))
-	cu_sem_test_cases[0].FromHost(unsafe.Pointer(&sem_test_cases[0][0]))
-
-	for i := 1; i < *config.population_size; i++ {
-		f, s = semantic_evaluate(p.individuals[i], cInt(nrow), 0)
+	for i := 0; i < *config.population_size; i++ {
+		f, s := semantic_evaluate(p.individuals[i], cInt(nrow), 0)
 		fit[i] = f
-		copy(sem_train_cases[i], s)
+		cu_sem_train_cases[i].FromHost(unsafe.Pointer(&s[0]))
 
 		f, s = semantic_evaluate(p.individuals[i], cInt(nrow_test), cInt(nrow))
 		fit_test[i] = f
-		copy(sem_test_cases[i], s)
-
-		cu_sem_train_cases[i].FromHost(unsafe.Pointer(&sem_train_cases[i][0]))
-		cu_sem_test_cases[i].FromHost(unsafe.Pointer(&sem_test_cases[i][0]))
+		cu_sem_test_cases[i].FromHost(unsafe.Pointer(&s[0]))
 	}
 }
 
@@ -818,150 +800,49 @@ func semantic_evaluate(el *Node, sem_size, sem_offs cInt) (cFloat64, Semantic) {
 	return semantic_evaluate_array(&arr, sem_size, sem_offs)
 }
 
-// Use worker goroutines to accumulate a value passed on channel
-func go_accumulate1(f func(cInt, cInt, chan cFloat64)) cFloat64 {
-	nw := cInt(runtime.NumCPU())  // Number of workers
-	ch := make(chan cFloat64, nw) // Channel for partial output
-	for w := cInt(0); w < nw; w++ {
-		go f(w, nw, ch)
-	}
-	var v1 cFloat64
-	for w := cInt(0); w < nw; w++ {
-		v1 += <-ch
-	}
-	return v1
-}
-
-// Accumulate two values in parallel
-func go_accumulate2(f func(cInt, cInt, chan cFloat64, chan cFloat64)) (cFloat64, cFloat64) {
-	nw := cInt(runtime.NumCPU())  // Number of workers
-	c1 := make(chan cFloat64, nw) // Channel for partial output
-	c2 := make(chan cFloat64, nw) // Channel for partial output
-	for w := cInt(0); w < nw; w++ {
-		go f(w, nw, c1, c2)
-	}
-	var v1, v2 cFloat64
-	for w := cInt(0); w < nw; w++ {
-		v1 += <-c1
-		v2 += <-c2
-	}
-	return v1, v2
-}
-
 func semantic_evaluate_array(tree *[]cInt, sem_size, sem_offs cInt) (cFloat64, Semantic) {
-	if true {
-		val := make(Semantic, sem_size) // Array with semantic to be computed
-		for i := sem_offs; i < sem_size+sem_offs; i++ {
-			val[i-sem_offs] = eval_arrays(*tree, 0, i)
-		}
-		d, _, _ := fitness_of_semantic_train(val, sem_size, sem_offs)
-		return d, val
-	} else {
-		/* New (broken?) code
-		val := make(Semantic, sem_size)   // Array with semantic to be computed
-		nw := cInt(*config.num_workers)   // Number of worker goroutines
-		block := (sem_size + nw - 1) / nw // Size of a worker block
-		var wg sync.WaitGroup             // Wait group for workers
-
-		for w := cInt(0); w < nw; w++ {
-			start := cInt(w * block)
-			end := cInt((w + 1) * block)
-			wg.Add(1)
-			go func(id, start, end cInt) {
-				if end > sem_size {
-					end = sem_size
-				}
-				for i := start; i < end; i++ {
-					val[i-sem_offs] = eval_arrays(*tree, 0, i)
-				}
-				wg.Done()
-			}(w, start+sem_offs, end+sem_offs)
-		}
-		wg.Wait()
-
-		d, _, _ := fitness_of_semantic_train(val, sem_size, sem_offs)
-		*/
-		val := make(Semantic, sem_size) // Array with semantic
-
-		// Number of worker goroutines
-		nw := cInt(runtime.NumCPU())
-		// Temporary accumulators
-		var acc1 = make([]cFloat64, nw)
-		var acc2 = make([]cFloat64, nw)
-
-		var wg sync.WaitGroup
-
-		// Accumulate average output and average target values
-		var avg_out, avg_tar cFloat64
-		block := (sem_size + nw - 1) / nw
-		for w := cInt(0); w < nw; w++ {
-			start := cInt(w * block)
-			end := cInt((w + 1) * block)
-			wg.Add(1)
-			go func(id, start, end cInt) {
-				if end > sem_size {
-					end = sem_size
-				}
-				for i := start; i < end; i++ {
-					res := eval_arrays(*tree, 0, i)
-					val[i-sem_offs] = res
-					acc1[id] += res
-					acc2[id] += set[i].y_value
-				}
-				wg.Done()
-			}(w, start+sem_offs, end+sem_offs)
-		}
-		wg.Wait()
-
-		/*
-			avg_out, avg_tar := go_accumulate2(func(id, nw cInt, co, ct chan cFloat64) {
-				var ao, at cFloat64 // Output and target accumulators
-				// Each worker works on a separated share
-				for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
-					res := eval_arrays(*tree, 0, i)
-					val[i-sem_offs] = res // Save computed value
-					ao += res
-					at += set[i].y_value
-				}
-				// Send accumulated values
-				co <- ao
-				ct <- at
-			})
-		*/
-
-		avg_out /= cFloat64(sem_size)
-		avg_tar /= cFloat64(sem_size)
-
-		// Compute numerator and denominator for linear scaling
-		num, den := go_accumulate2(func(id, nw cInt, cnum, cden chan cFloat64) {
-			var an, ad cFloat64
-			// Each worker works on a separated share
-			for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
-				odiff := val[i-sem_offs] - avg_out
-				an += (set[i].y_value - avg_tar) * odiff
-				ad += odiff * odiff
-			}
-			// Send accumulated values
-			cnum <- an
-			cden <- ad
-		})
-
-		b := num / den
-		a := avg_tar - b*avg_out
-
-		// Accumulate distance between scaled output and target
-		d := go_accumulate1(func(id, nw cInt, ch chan cFloat64) {
-			var ad cFloat64
-			for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
-				ad += dist_func(set[i].y_value, a+b*val[i-sem_offs])
-			}
-			ch <- ad
-		})
-
-		d = d / cFloat64(sem_size)
-		return d, val
-
+	val := make(Semantic, sem_size) // Array with semantic to be computed
+	for i := sem_offs; i < sem_size+sem_offs; i++ {
+		val[i-sem_offs] = eval_arrays(*tree, 0, i)
 	}
+	d, _, _ := fitness_of_semantic_train(val, sem_size, sem_offs)
+	return d, val
+}
+
+// Given a semantic, compute the fitness of a subset of that semantic as the
+// Mean Squared Difference between the semantic and the dataset.
+// Only sem_size elements, starting from sem_offs, will be considered in the computation
+func fitness_of_semantic_train(sem Semantic, sem_size, sem_offs cInt) (d, a, b cFloat64) {
+	var avg_out, avg_tar cFloat64
+	for i := sem_offs; i < sem_size+sem_offs; i++ {
+		avg_out += sem[i-sem_offs]
+		avg_tar += set[i].y_value
+	}
+	avg_out /= cFloat64(sem_size)
+	avg_tar /= cFloat64(sem_size)
+
+	var num, den cFloat64
+	for i := sem_offs; i < sem_offs+sem_size; i++ {
+		odiff := sem[i-sem_offs] - avg_out
+		num += (set[i].y_value - avg_tar) * odiff
+		den += odiff * odiff
+	}
+	b = num / den
+	a = avg_tar - b*avg_out
+
+	for i := sem_offs; i < sem_offs+sem_size; i++ {
+		d += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
+	}
+	d = d / cFloat64(sem_size)
+	return d, a, b
+}
+
+func fitness_of_semantic_test(sem Semantic, sem_size, sem_offs cInt, a, b cFloat64) cFloat64 {
+	var d cFloat64
+	for i := sem_offs; i < sem_size+sem_offs; i++ {
+		d += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
+	}
+	return d
 }
 
 // Implements a tournament selection procedure
@@ -988,14 +869,21 @@ func reproduction(i cInt) {
 	}
 
 	// Copy fitness and semantics of the selected individual
-	copy(sem_train_cases_new[old_i], sem_train_cases[i])
-	copy(sem_test_cases_new[old_i], sem_test_cases[i])
-
 	fit_new[old_i] = fit[i]
 	fit_test_new[old_i] = fit_test[i]
 
-	cu_sem_train_cases_new[old_i].FromHost(unsafe.Pointer(&sem_train_cases[i][0]))
-	cu_sem_test_cases_new[old_i].FromHost(unsafe.Pointer(&sem_test_cases[i][0]))
+	kern_copy.Launch1D(cu_bpg_ds, cu_tpb, 0,
+		cu_sem_train_cases_new[old_i],
+		cu_sem_train_cases[i],
+		cu_sem_test_cases_new[old_i],
+		cu_sem_test_cases[i],
+	)
+}
+
+func gpu_to_slice(cub *cuda.Buffer, size int) []cFloat64 {
+	res := make([]cFloat64, size)
+	cub.FromDevice(unsafe.Pointer(&res[0]))
+	return res
 }
 
 // Performs a geometric semantic crossover
@@ -1006,15 +894,18 @@ func geometric_semantic_crossover(i cInt) {
 		// Replace the individual with the crossover of two parents
 		p1 := tournament_selection()
 		p2 := tournament_selection()
-		//log.Println("Albero generato:", rt)
-		//log.Println("Vincitori torneo:", p1, p2)
+
+		if false {
+			log.Println("Albero generato:", rt)
+			log.Println("Vincitori torneo:", p1, p2)
+		}
 
 		// Create a tree and copy it to unified memory
 		cu_tmp_tree_arr1.FromHostN(unsafe.Pointer(&rt[0]), C.sizeof_int*len(rt))
 
 		// Evaluate the tree on GPU
 		kern_eval_array.Launch1D(
-			cu_bgp_ds,        // Number of blocks for dataset
+			cu_bpg_ds,        // Number of blocks for dataset
 			cu_tpb,           // Number of threads per block is fixed
 			0,                // No shared memory needed
 			cu_sym_val,       // Value for symbols
@@ -1022,9 +913,14 @@ func geometric_semantic_crossover(i cInt) {
 			cu_tmp_tree_arr1, // Tree to evaluate
 			cu_tmp_sem_tot1)  // Output, semantic for whole dataset
 
+		// DEBUG collect result for printing
+		if false {
+			log.Println("Ottenuto evaluation:", gpu_to_slice(cu_tmp_sem_tot1, nrow+nrow_test))
+		}
+
 		// Run kernel that perform crossover
 		kern_crossover.Launch1D(
-			cu_bgp_ds,
+			cu_bpg_ds,
 			cu_tpb,
 			0,
 			cu_tmp_sem_tot1,           // Semantic to use
@@ -1036,26 +932,35 @@ func geometric_semantic_crossover(i cInt) {
 			cu_sem_test_cases_new[i],  // Destination for new test sem
 		)
 
-		cu_sem_train_cases_new[i].FromDevice(unsafe.Pointer(&sem_train_cases_new[i][0]))
-		cu_sem_test_cases_new[i].FromDevice(unsafe.Pointer(&sem_test_cases_new[i][0]))
+		if false {
+			// Print input vectors as well?
+			log.Println("Dopo crossover GPU sem1", gpu_to_slice(cu_sem_train_cases_new[i], nrow))
+			log.Println("Dopo crossover GPU sem2", gpu_to_slice(cu_sem_test_cases_new[i], nrow_test))
+		}
 
 		// Evaluate fitness
-		kern_fitness.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_train_cases_new[i], cu_sem_test_cases_new[i], cu_tmp_d1, cu_tmp_d2)
+		kern_fit_train.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_train_cases_new[i], cu_tmp_d1, cu_ls_a, cu_ls_b)
+		cu_tmp_d1.FromDevice(unsafe.Pointer(&fit_new[i]))
+		kern_fit_test.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_test_cases_new[i], cu_ls_a, cu_ls_b, cu_tmp_d2)
+		cu_tmp_d2.FromDevice(unsafe.Pointer(&fit_test_new[i]))
 
-		fit_new[i] = cFloat64(cu_tmp_d1.ToFloat64())
-		fit_test_new[i] = cFloat64(cu_tmp_d2.ToFloat64())
+		//fit_new[i] = cFloat64(cu_tmp_d1.ToFloat64())
+		//fit_test_new[i] = cFloat64(cu_tmp_d2.ToFloat64())
 	} else {
-		//log.Println("Crossover del migliore, copio e basta")
+		if false {
+			log.Println("Crossover del migliore, copio e basta")
+		}
 
 		// The best individual will not be changed
-		copy(sem_train_cases_new[i], sem_train_cases[i])
-		copy(sem_test_cases_new[i], sem_test_cases[i])
-
 		fit_new[i] = fit[i]
 		fit_test_new[i] = fit_test[i]
 
-		cu_sem_train_cases_new[i].FromHost(unsafe.Pointer(&sem_train_cases[i][0]))
-		cu_sem_test_cases_new[i].FromHost(unsafe.Pointer(&sem_test_cases[i][0]))
+		kern_copy.Launch1D(cu_bpg_ds, cu_tpb, 0,
+			cu_sem_train_cases_new[i],
+			cu_sem_train_cases[i],
+			cu_sem_test_cases_new[i],
+			cu_sem_test_cases[i],
+		)
 	}
 }
 
@@ -1067,241 +972,44 @@ func geometric_semantic_mutation(i cInt) {
 		rt1 := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
 		rt2 := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
 
-		//log.Println("Mutazione con step:", mut_step)
-		//log.Println("Mutazione albero 1:", rt1)
-		//log.Println("Mutazione albero 2:", rt2)
+		if false {
+			log.Println("Mutazione con step:", mut_step)
+			log.Println("Mutazione albero 1:", rt1)
+			log.Println("Mutazione albero 2:", rt2)
+		}
 
 		// Copy trees to GPU
 		cu_tmp_tree_arr1.FromHostN(unsafe.Pointer(&rt1[0]), C.sizeof_int*len(rt1))
 		cu_tmp_tree_arr2.FromHostN(unsafe.Pointer(&rt2[0]), C.sizeof_int*len(rt2))
 		// Evaluate the tree on GPU
-		kern_eval_array.Launch1D(cu_bgp_ds, cu_tpb, 0, cu_sym_val, cu_set, cu_tmp_tree_arr1, cu_tmp_sem_tot1)
-		kern_eval_array.Launch1D(cu_bgp_ds, cu_tpb, 0, cu_sym_val, cu_set, cu_tmp_tree_arr2, cu_tmp_sem_tot2)
+		kern_eval_array.Launch1D(cu_bpg_ds, cu_tpb, 0, cu_sym_val, cu_set, cu_tmp_tree_arr1, cu_tmp_sem_tot1)
+		kern_eval_array.Launch1D(cu_bpg_ds, cu_tpb, 0, cu_sym_val, cu_set, cu_tmp_tree_arr2, cu_tmp_sem_tot2)
+
+		if false {
+			log.Println("Ottenuto eval1:", gpu_to_slice(cu_tmp_sem_tot1, nrow+nrow_test))
+			log.Println("Ottenuto eval2:", gpu_to_slice(cu_tmp_sem_tot2, nrow+nrow_test))
+		}
 
 		// Copy mut step to GPU
 		cu_tmp_d1.FromFloat64(float64(mut_step))
 		// Run kernel that perform mutation
-		kern_mutation.Launch1D(cu_bgp_ds, cu_tpb, 0, cu_tmp_sem_tot1, cu_tmp_sem_tot2, cu_tmp_d1, cu_sem_train_cases_new[i], cu_sem_test_cases_new[i])
+		kern_mutation.Launch1D(cu_bpg_ds, cu_tpb, 0, cu_tmp_sem_tot1, cu_tmp_sem_tot2, cu_tmp_d1, cu_sem_train_cases_new[i], cu_sem_test_cases_new[i])
 
-		// Copy back results
-		cu_sem_train_cases_new[i].FromDevice(unsafe.Pointer(&sem_train_cases_new[i][0]))
-		cu_sem_test_cases_new[i].FromDevice(unsafe.Pointer(&sem_test_cases_new[i][0]))
-
+		if false {
+			log.Println("Mutazione GPU train", gpu_to_slice(cu_sem_train_cases_new[i], nrow))
+			log.Println("Mutazione GPU test", gpu_to_slice(cu_sem_test_cases_new[i], nrow_test))
+		}
 		// Evaluate fitness
-		kern_fitness.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_train_cases_new[i], cu_sem_test_cases_new[i], cu_tmp_d1, cu_tmp_d2)
+		//kern_fitness.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_train_cases_new[i], cu_sem_test_cases_new[i], cu_tmp_d1, cu_tmp_d2)
+		kern_fit_train.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_train_cases_new[i], cu_tmp_d1, cu_ls_a, cu_ls_b)
+		cu_tmp_d1.FromDevice(unsafe.Pointer(&fit_new[i]))
+		kern_fit_test.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_test_cases_new[i], cu_ls_a, cu_ls_b, cu_tmp_d2)
+		cu_tmp_d2.FromDevice(unsafe.Pointer(&fit_test_new[i]))
 
-		fit_new[i] = cFloat64(cu_tmp_d1.ToFloat64())
-		fit_test_new[i] = cFloat64(cu_tmp_d2.ToFloat64())
+		//fit_new[i] = cFloat64(cu_tmp_d1.ToFloat64())
+		//fit_test_new[i] = cFloat64(cu_tmp_d2.ToFloat64())
 	}
 	// Mutation happens after reproduction: elite are reproduced but are not mutated
-}
-
-// Given a semantic, compute the fitness of a subset of that semantic as the
-// Mean Squared Difference between the semantic and the dataset.
-// Only sem_size elements, starting from sem_offs, will be considered in the computation
-func fitness_of_semantic_train(sem Semantic, sem_size, sem_offs cInt) (d, a, b cFloat64) {
-	switch 0 {
-	case 0: // Serial code
-		var avg_out, avg_tar cFloat64
-		for i := sem_offs; i < sem_size+sem_offs; i++ {
-			avg_out += sem[i-sem_offs]
-			avg_tar += set[i].y_value
-		}
-		avg_out /= cFloat64(sem_size)
-		avg_tar /= cFloat64(sem_size)
-
-		var num, den cFloat64
-		for i := sem_offs; i < sem_offs+sem_size; i++ {
-			odiff := sem[i-sem_offs] - avg_out
-			num += (set[i].y_value - avg_tar) * odiff
-			den += odiff * odiff
-		}
-		b = num / den
-		a = avg_tar - b*avg_out
-
-		var d cFloat64
-		for i := sem_offs; i < sem_offs+sem_size; i++ {
-			d += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
-		}
-		d = d / cFloat64(sem_size)
-		return d, a, b
-	case 1:
-		// Accumulate output and target
-		avg_out, avg_tar := go_accumulate2(func(id, nw cInt, co, ct chan cFloat64) {
-			var ao, at cFloat64
-			for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
-				ao += sem[i-sem_offs]
-				at += set[i].y_value
-			}
-			co <- ao
-			ct <- at
-		})
-
-		avg_out /= cFloat64(sem_size)
-		avg_tar /= cFloat64(sem_size)
-
-		// Compute numerator and denominator for linear scaling
-		num, den := go_accumulate2(func(id, nw cInt, cnum, cden chan cFloat64) {
-			var an, ad cFloat64
-			for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
-				odiff := sem[i-sem_offs] - avg_out
-				an += (set[i].y_value - avg_tar) * odiff
-				ad += odiff * odiff
-			}
-			cnum <- an
-			cden <- ad
-		})
-
-		b = num / den
-		a = avg_tar - b*avg_out
-
-		// Accumulate distance between scaled output and target
-		d = go_accumulate1(func(id, nw cInt, ch chan cFloat64) {
-			var ad cFloat64
-			for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
-				ad += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
-			}
-			ch <- ad
-		})
-
-		d = d / cFloat64(sem_size)
-		return d, a, b
-	default:
-		nw := cInt(*config.num_workers)   // Number of worker goroutines
-		block := (sem_size + nw - 1) / nw // Size of a worker block
-		var wg sync.WaitGroup             // Wait group for workers
-
-		// Temporary accumulators
-		var acc1 = make([]cFloat64, nw)
-		var acc2 = make([]cFloat64, nw)
-
-		// Accumulate average output and average target values
-		for w := cInt(0); w < nw; w++ {
-			start := cInt(w * block)
-			end := cInt((w + 1) * block)
-			wg.Add(1)
-			go func(id, start, end cInt) {
-				if end > sem_size {
-					end = sem_size
-				}
-				for i := start; i < end; i++ {
-					acc1[id] += sem[i-sem_offs]
-					acc2[id] += set[i].y_value
-				}
-				wg.Done()
-			}(w, start+sem_offs, end+sem_offs)
-		}
-		wg.Wait()
-
-		var avg_out, avg_tar cFloat64
-		for i := cInt(0); i < nw; i++ {
-			avg_out += acc1[i]
-			avg_tar += acc2[i]
-		}
-
-		avg_out /= cFloat64(sem_size)
-		avg_tar /= cFloat64(sem_size)
-
-		for w := cInt(0); w < nw; w++ {
-			start := cInt(w * block)
-			end := cInt((w + 1) * block)
-			wg.Add(1)
-			go func(id, start, end cInt) {
-				if end > sem_size {
-					end = sem_size
-				}
-				acc1[id] = 0
-				acc2[id] = 0
-				for i := start; i < end; i++ {
-					odiff := sem[i-sem_offs] - avg_out
-					acc1[id] += (set[i].y_value - avg_tar) * odiff
-					acc2[id] += odiff * odiff
-				}
-				wg.Done()
-			}(w, start+sem_offs, end+sem_offs)
-		}
-		wg.Wait()
-
-		var num, den cFloat64
-		for i := cInt(0); i < nw; i++ {
-			num += acc1[i]
-			den += acc2[i]
-		}
-
-		b = num / den
-		a = avg_tar - b*avg_out
-
-		// Accumulate distance between scaled output and target
-		for w := cInt(0); w < nw; w++ {
-			start := cInt(w * block)
-			end := cInt((w + 1) * block)
-			wg.Add(1)
-			go func(id, start, end cInt) {
-				if end > sem_size {
-					end = sem_size
-				}
-				acc1[id] = 0
-				for i := start; i < end; i++ {
-					acc1[id] += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
-				}
-				wg.Done()
-			}(w, start+sem_offs, end+sem_offs)
-		}
-
-		for i := range acc1 {
-			d += acc1[i]
-		}
-		d = d / cFloat64(sem_size)
-		return d, a, b
-	}
-}
-
-func fitness_of_semantic_test(sem Semantic, sem_size, sem_offs cInt, a, b cFloat64) cFloat64 {
-	switch 0 {
-	case 0: // SINGLE THREAD
-		var d cFloat64
-		for i := sem_offs; i < sem_size+sem_offs; i++ {
-			d += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
-		}
-		return d
-	case 1: // Using accumulators
-		d := go_accumulate1(func(id, nw cInt, ch chan cFloat64) {
-			var ad cFloat64
-			for i := sem_offs + id; i < sem_offs+sem_size; i += nw {
-				ad += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
-			}
-			ch <- ad
-		})
-		return d / cFloat64(sem_size)
-	default:
-		nw := cInt(*config.num_workers)   // Number of worker goroutines
-		block := (sem_size + nw - 1) / nw // Size of a worker block
-		var wg sync.WaitGroup             // Wait group for workers
-		var ad = make([]cFloat64, nw)     // Accumulator
-
-		for w := cInt(0); w < nw; w++ {
-			start := cInt(w * block)
-			end := cInt((w + 1) * block)
-			wg.Add(1)
-			go func(id, start, end cInt) {
-				if end > sem_size {
-					end = sem_size
-				}
-				for i := start; i < end; i++ {
-					ad[id] += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
-				}
-				wg.Done()
-			}(w, start+sem_offs, end+sem_offs)
-		}
-		wg.Wait()
-
-		var d cFloat64
-		for i := cInt(0); i < nw; i++ {
-			d += ad[i]
-		}
-
-		return d / cFloat64(sem_size)
-	}
 }
 
 // Finds the best individual in the population
@@ -1319,8 +1027,6 @@ func best_individual() cInt {
 func update_tables() {
 	fit, fit_new = fit_new, fit
 	fit_test, fit_test_new = fit_test_new, fit_test
-	sem_train_cases, sem_train_cases_new = sem_train_cases_new, sem_train_cases
-	sem_test_cases, sem_test_cases_new = sem_test_cases_new, sem_test_cases
 	// Swap cuda buffers
 	cu_sem_train_cases, cu_sem_train_cases_new = cu_sem_train_cases_new, cu_sem_train_cases
 	cu_sem_test_cases, cu_sem_test_cases_new = cu_sem_test_cases_new, cu_sem_test_cases
@@ -1379,13 +1085,6 @@ func load_file_and_replace(path string, repl map[string]interface{}) string {
 	return target
 }
 
-// Unmanaged version of alloc_cFloat64
-func alloc_cFloat64(size int) (*cuda.Buffer, []cFloat64) {
-	cpu := make([]cFloat64, size)
-	gpu := cuda.NewBuffer(C.sizeof_double * size)
-	return gpu, cpu
-}
-
 // Allocate memory for fitness and semantic value for each individual
 func init_tables() {
 	fit = make([]cFloat64, *config.population_size)
@@ -1398,21 +1097,22 @@ func init_tables() {
 	cu_sem_test_cases = make([]*cuda.Buffer, *config.population_size)
 	cu_sem_test_cases_new = make([]*cuda.Buffer, *config.population_size)
 
-	sem_train_cases = make([]Semantic, *config.population_size)
-	sem_train_cases_new = make([]Semantic, *config.population_size)
-	sem_test_cases = make([]Semantic, *config.population_size)
-	sem_test_cases_new = make([]Semantic, *config.population_size)
-
 	for i := 0; i < *config.population_size; i++ {
-		cu_sem_train_cases[i], sem_train_cases[i] = alloc_cFloat64(nrow)            // make(Semantic, nrow)
-		cu_sem_train_cases_new[i], sem_train_cases_new[i] = alloc_cFloat64(nrow)    // make(Semantic, nrow)
-		cu_sem_test_cases[i], sem_test_cases[i] = alloc_cFloat64(nrow_test)         // make(Semantic, nrow_test)
-		cu_sem_test_cases_new[i], sem_test_cases_new[i] = alloc_cFloat64(nrow_test) // make(Semantic, nrow_test)
+		cu_sem_train_cases[i] = cuda.NewBuffer(C.sizeof_double * nrow)
+		cu_sem_train_cases_new[i] = cuda.NewBuffer(C.sizeof_double * nrow)
+		cu_sem_test_cases[i] = cuda.NewBuffer(C.sizeof_double * nrow_test)
+		cu_sem_test_cases_new[i] = cuda.NewBuffer(C.sizeof_double * nrow_test)
 	}
 }
 
 func bpg(nThreads int) int {
 	return (nThreads + cu_tpb - 1) / cu_tpb
+}
+
+type logWriter int
+
+func (writer logWriter) Write(bytes []byte) (int, error) {
+	return fmt.Fprint(os.Stderr, string(bytes))
 }
 
 func main() {
@@ -1421,6 +1121,13 @@ func main() {
 	runtime.LockOSThread()
 	// Parse CLI arguments: if they are set, they will override defaults and config file
 	flag.Parse()
+
+	// For printing log without date
+	if false {
+		log.SetFlags(0)
+		log.SetOutput(new(logWriter))
+	}
+
 	// If required, show version and exit
 	if *showVersion {
 		if gitCommit != "" {
@@ -1441,10 +1148,6 @@ func main() {
 		fmt.Println("Please specify the test dataset using the test_file option")
 		return
 	}
-
-	//if *config.use_goroutines {
-	log.Println("Using goroutines with", *config.num_workers, "workers")
-	//}
 
 	var cuda_dist string // Which function to use in CUDA for distance
 
@@ -1554,9 +1257,11 @@ func main() {
 	cu_tmp_tree_arr2 = cuda.NewBuffer(C.sizeof_int * (2 << uint(*config.max_depth_creation+1))) // Storage for generated trees
 	cu_tmp_d1 = cuda.NewBuffer(C.sizeof_double)
 	cu_tmp_d2 = cuda.NewBuffer(C.sizeof_double)
+	cu_ls_a = cuda.NewBuffer(C.sizeof_double)
+	cu_ls_b = cuda.NewBuffer(C.sizeof_double)
 
 	// Number of blocks required to have at least 1 thread for each row in dataset
-	cu_bgp_ds = bpg(nrow + nrow_test)
+	cu_bpg_ds = bpg(nrow + nrow_test)
 	cu_bpg_pop = bpg(*config.population_size)
 
 	// Load CUDA code and replace some variables
@@ -1577,9 +1282,11 @@ func main() {
 	cu_prog.Compile()
 	cu_mod.LoadData(cu_prog)
 
+	kern_copy = cu_mod.GetFunction("sem_copy")
 	kern_eval_array = cu_mod.GetFunction("semantic_eval_arrays")
 	kern_crossover = cu_mod.GetFunction("sem_crossover")
-	kern_fitness = cu_mod.GetFunction("sem_fitness")
+	kern_fit_train = cu_mod.GetFunction("sem_fitness_train")
+	kern_fit_test = cu_mod.GetFunction("sem_fitness_test")
 	kern_mutation = cu_mod.GetFunction("sem_mutation")
 
 	// Tracking time
@@ -1622,6 +1329,7 @@ func main() {
 		update_tables()
 
 		index_best = best_individual()
+		//log.Println("Best individual", index_best)
 
 		fmt.Fprintln(fitness_train, fit[index_best])
 		fmt.Fprintln(fitness_test, fit_test[index_best])
