@@ -109,7 +109,17 @@ void sem_copy(double *dest_train, double *src_train, double *dest_test, double *
 	}
 }
 
-// Runs with only 2 threads, for this unoptimized version
+extern "C" __global__
+void sem_copy_split(double *dest_train, double *dest_test, double *src_tot) {
+	int tig = blockIdx.x * blockDim.x + threadIdx.x;
+	if (tig < NROWS_TRAIN) {
+		dest_train[tig] = src_tot[tig];
+	} else if (tig < NROWS_TOT) {
+		dest_test[tig-NROWS_TRAIN] = src_tot[tig];
+	}
+}
+
+// Runs with 32 threads
 extern "C" __global__
 void sem_fitness_train(double *set, double *sem_train, double *out_fit_train, double *out_ls_a, double *out_ls_b) {
 	// Warp size shared memory
@@ -199,6 +209,7 @@ void sem_fitness_train(double *set, double *sem_train, double *out_fit_train, do
 	}
 }
 
+// Runs with 32 threads
 extern "C" __global__
 void sem_fitness_test(double *set, double *sem_test, double *ls_a, double *ls_b, double *out_fit_test) {
 	__shared__ double shm[32]; // Warp size shared memory
