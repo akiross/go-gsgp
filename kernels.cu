@@ -152,7 +152,92 @@ void sem_copy(double *dest_train, double *src_train, double *dest_test, double *
 // Runs with only 2 threads, for this unoptimized version
 extern "C" __global__
 void sem_fitness_train(double *set, double *sem_train, double *out_fit_train, double *out_ls_a, double *out_ls_b) {
+	// Warp size shared memory
+	__shared__ double sh_out[32]; // Sum of out semantics
+	__shared__ double sh_tar[32]; // Sum of target semantics
+	__shared__ double sh_oxo[32]; // Sum of squared out semantics
+	__shared__ double sh_oxt[32]; // Sum of out times target semantics
+
 	int tig = blockIdx.x * blockDim.x + threadIdx.x;
+	int block_size = (NROWS_TRAIN + 32 - 1) / 32;
+
+	if (tig < 32) {
+		int start = block_size * tig;
+		int end = block_size * (tig + 1);
+		if (end > NROWS_TRAIN)
+			end = NROWS_TRAIN;
+
+		sh_out[tig] = 0;
+		sh_tar[tig] = 0;
+		sh_oxo[tig] = 0;
+		sh_oxt[tig] = 0;
+
+		for (int i = start; i < end; i++) {
+			double t = getDataset(NUM_VARIABLE_SYMBOLS, i, set);
+			double y = sem_train[i];
+			sh_out[tig] += y;
+			sh_tar[tig] += t;
+			sh_oxo[tig] += y * y;
+			sh_oxt[tig] += y * t;
+		}
+	}
+
+	// Wait for all the threads to finish
+	__syncthreads();
+
+	__shared__ double a;
+	__shared__ double b;
+
+	if (tig == 0) {
+		double sum_out = sh_out[0];
+		double sum_tar = sh_tar[0];
+		double sum_oxo = sh_oxo[0];
+		double sum_oxt = sh_oxt[0];
+
+		for (int i = 1; i < 32; i++) {
+			sum_out += sh_out[i];
+			sum_tar += sh_tar[i];
+			sum_oxo += sh_oxo[i];
+			sum_oxt += sh_oxt[i];
+		}
+	
+		double avg_out = sum_out / NROWS_TRAIN;
+		double avg_tar = sum_tar / NROWS_TRAIN;
+
+		double num = sum_oxt - sum_tar * avg_out - sum_out * avg_tar + NROWS_TRAIN * avg_out * avg_tar; 
+		double den = sum_oxo - 2.0 * sum_out * avg_out + NROWS_TRAIN * avg_out * avg_out; 
+
+		b = num / den;
+		a = avg_tar - b * avg_out;
+
+		*out_ls_b = b;
+		*out_ls_a = a;
+	}
+
+	__syncthreads();
+
+	__shared__ double shm[32]; // Partial fitness sum
+
+	if (tig < 32) {
+		int start = block_size * tig;
+		int end = block_size * (tig + 1);
+		if (end > NROWS_TRAIN)
+			end = NROWS_TRAIN;
+		shm[tig] = 0;
+		for (int i = start; i < end; i++) {
+			double yy = getDataset(NUM_VARIABLE_SYMBOLS, i, set);
+			shm[tig] += ERROR_FUNC(yy, a + b * sem_train[i]);
+		}
+	}
+	__syncthreads();
+
+	if (tig == 0) {
+		for (int i = 1; i < 32; i++) {
+			shm[0] += shm[i];
+		}
+		out_fit_train[0] = shm[0] / double(NROWS_TRAIN);
+	}
+	/*
 	if (tig == 0) {
 		double sum_out = 0; // Maybe initialize it to first value and start for loop with 1, faster?
 		double sum_tar = 0;
@@ -185,11 +270,38 @@ void sem_fitness_train(double *set, double *sem_train, double *out_fit_train, do
 		}
 		out_fit_train[0] = d / double(NROWS_TRAIN);
 	}
+	*/
 }
 
 extern "C" __global__
 void sem_fitness_test(double *set, double *sem_test, double *ls_a, double *ls_b, double *out_fit_test) {
+	__shared__ double shm[32]; // Warp size shared memory
 	int tig = blockIdx.x * blockDim.x + threadIdx.x;
+	int block_size = (NROWS_TEST + 32 - 1) / 32;
+
+	if (tig < 32) {
+		double a = *ls_a;
+		double b = *ls_b;
+		int start = block_size * tig;
+		int end = block_size * (tig + 1);
+		if (end > NROWS_TEST)
+			end = NROWS_TEST;
+		shm[tig] = 0;
+		for (int i = start; i < end; i++) {
+			double yy = getDataset(NUM_VARIABLE_SYMBOLS, i+NROWS_TRAIN, set);
+			shm[tig] += ERROR_FUNC(yy, a + b * sem_test[i]);
+		}
+	}
+	__syncthreads();
+
+	if (tig == 0) {
+		for (int i = 1; i < 32; i++) {
+			shm[0] += shm[i];
+		}
+		out_fit_test[1] = shm[0] / double(NROWS_TEST);
+	}
+
+	/*
 	if (tig == 0) {
 		double d = 0;
 		double a = *ls_a;
@@ -200,6 +312,7 @@ void sem_fitness_test(double *set, double *sem_test, double *ls_a, double *ls_b,
 		}
 		out_fit_test[1] = d / double(NROWS_TEST);
 	}
+	*/
 }
 
 extern "C" __global__
