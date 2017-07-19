@@ -154,25 +154,24 @@ extern "C" __global__
 void sem_fitness_train(double *set, double *sem_train, double *out_fit_train, double *out_ls_a, double *out_ls_b) {
 	int tig = blockIdx.x * blockDim.x + threadIdx.x;
 	if (tig == 0) {
-		double avg_out = 0; // Maybe initialize it to first value and start for loop with 1, faster?
-		double avg_tar = 0;
+		double sum_out = 0; // Maybe initialize it to first value and start for loop with 1, faster?
+		double sum_tar = 0;
+		double sum_oxo = 0;
+		double sum_oxt = 0;
 		for (int i = 0; i < NROWS_TRAIN; i++) {
-			double yy = getDataset(NUM_VARIABLE_SYMBOLS, i, set);
-			avg_out += sem_train[i];
-			avg_tar += yy;
+			double t = getDataset(NUM_VARIABLE_SYMBOLS, i, set);
+			double y = sem_train[i];
+			sum_out += y;
+			sum_tar += t;
+			sum_oxo += y * y;
+			sum_oxt += y * t;
 		}
 
-		avg_out /= NROWS_TRAIN;
-		avg_tar /= NROWS_TRAIN;
+		double avg_out = sum_out / NROWS_TRAIN;
+		double avg_tar = sum_tar / NROWS_TRAIN;
 
-		double num = 0; // Same as above
-		double den = 0;
-		for (int i = 0; i < NROWS_TRAIN; i++) {
-			double yy = getDataset(NUM_VARIABLE_SYMBOLS, i, set);
-			double odiff = sem_train[i] - avg_out;
-			num += (yy - avg_tar) * odiff;
-			den += odiff * odiff;
-		}
+		double num = sum_oxt - sum_tar * avg_out - sum_out * avg_tar + NROWS_TRAIN * avg_out * avg_tar; 
+		double den = sum_oxo - 2.0 * sum_out * avg_out + NROWS_TRAIN * avg_out * avg_out; 
 
 		double b = num / den;
 		double a = avg_tar - b * avg_out;

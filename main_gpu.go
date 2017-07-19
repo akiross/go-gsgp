@@ -208,6 +208,7 @@ var (
 	cu_tmp_d1, cu_tmp_d2, cu_ls_a, cu_ls_b *cuda.Buffer
 	cu_tmp                                 *cuda.Buffer
 	tmp_sem_train, tmp_sem_test            []cFloat64
+	tmp_fits                               [2]cFloat64
 )
 
 const (
@@ -944,10 +945,9 @@ func geometric_semantic_crossover(i cInt) {
 		kern_fit_test.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_test_cases_new[i], cu_ls_a, cu_ls_b, cu_tmp)
 
 		// Perform single data transfer
-		var fits [2]cFloat64
-		cu_tmp.FromDevice(unsafe.Pointer(&fits[0]))
-		fit_new[i] = fits[0]
-		fit_test_new[i] = fits[1]
+		cu_tmp.FromDevice(unsafe.Pointer(&tmp_fits))
+		fit_new[i] = tmp_fits[0]
+		fit_test_new[i] = tmp_fits[1]
 
 		//fit_new[i] = cFloat64(cu_tmp_d1.ToFloat64())
 		//fit_test_new[i] = cFloat64(cu_tmp_d2.ToFloat64())
@@ -1011,10 +1011,9 @@ func geometric_semantic_mutation(i cInt) {
 		kern_fit_test.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_test_cases_new[i], cu_ls_a, cu_ls_b, cu_tmp)
 
 		// Perform single data transfer, faster than two separated transfers
-		var fits [2]cFloat64
-		cu_tmp.FromDevice(unsafe.Pointer(&fits[0]))
-		fit_new[i] = fits[0]
-		fit_test_new[i] = fits[1]
+		cu_tmp.FromDevice(unsafe.Pointer(&tmp_fits))
+		fit_new[i] = tmp_fits[0]
+		fit_test_new[i] = tmp_fits[1]
 
 		//fit_new[i] = cFloat64(cu_tmp_d1.ToFloat64())
 		//fit_test_new[i] = cFloat64(cu_tmp_d2.ToFloat64())
