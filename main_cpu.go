@@ -716,16 +716,17 @@ func eval_arrays(tree []cInt, start cInt, i cInt) cFloat64 {
 // Evaluate is called once, after individuals have been initialized for the first time.
 // This function fills fit using semantic_evaluate
 func evaluate(p *Population) {
-	f, s := semantic_evaluate(p.individuals[0], cInt(nrow), 0)
-	fit[0] = f
-	copy(sem_train_cases[0], s)
+	/*
+		f, s := semantic_evaluate(p.individuals[0], cInt(nrow), 0)
+		fit[0] = f
+		copy(sem_train_cases[0], s)
 
-	f, s = semantic_evaluate(p.individuals[0], cInt(nrow_test), cInt(nrow))
-	fit_test[0] = f
-	copy(sem_test_cases[0], s)
-
-	for i := 1; i < *config.population_size; i++ {
-		f, s = semantic_evaluate(p.individuals[i], cInt(nrow), 0)
+		f, s = semantic_evaluate(p.individuals[0], cInt(nrow_test), cInt(nrow))
+		fit_test[0] = f
+		copy(sem_test_cases[0], s)
+	*/
+	for i := 0; i < *config.population_size; i++ {
+		f, s := semantic_evaluate(p.individuals[i], cInt(nrow), 0)
 		fit[i] = f
 		copy(sem_train_cases[i], s)
 
@@ -863,6 +864,9 @@ func geometric_semantic_mutation(i cInt) {
 // Given a semantic, compute the fitness of a subset of that semantic as the
 // Mean Squared Difference between the semantic and the dataset.
 // Only sem_size elements, starting from sem_offs, will be considered in the computation
+//
+// TODO since sem_size and sem_offs are misleading, we can replace it directly with a slice of []Instance
+// and infer sem_size from that (sem must have the same length)
 func fitness_of_semantic_train(sem Semantic, sem_size, sem_offs cInt) (d, a, b cFloat64) {
 	var avg_out, avg_tar cFloat64
 	for i := sem_offs; i < sem_size+sem_offs; i++ {
@@ -890,10 +894,10 @@ func fitness_of_semantic_train(sem Semantic, sem_size, sem_offs cInt) (d, a, b c
 
 func fitness_of_semantic_test(sem Semantic, sem_size, sem_offs cInt, a, b cFloat64) cFloat64 {
 	var d cFloat64
-	for i := sem_offs; i < sem_size+sem_offs; i++ {
+	for i := sem_offs; i < sem_offs+sem_size; i++ {
 		d += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
 	}
-	return d
+	return d / cFloat64(sem_size)
 }
 
 // Finds the best individual in the population

@@ -184,7 +184,7 @@ void sem_fitness_train(double *set, double *sem_train, double *out_fit_train, do
 			double yy = getDataset(NUM_VARIABLE_SYMBOLS, i, set);
 			d += ERROR_FUNC(yy, a + b * sem_train[i]);
 		}
-		*out_fit_train = d / double(NROWS_TRAIN);
+		out_fit_train[0] = d / double(NROWS_TRAIN);
 	}
 }
 
@@ -199,12 +199,12 @@ void sem_fitness_test(double *set, double *sem_test, double *ls_a, double *ls_b,
 			double yy = getDataset(NUM_VARIABLE_SYMBOLS, i+NROWS_TRAIN, set);
 			d += ERROR_FUNC(yy, a + b * sem_test[i]);
 		}
-		*out_fit_test = d / double(NROWS_TEST);
+		out_fit_test[1] = d / double(NROWS_TEST);
 	}
 }
 
 extern "C" __global__
-void sem_fitness(double *set, double *sem_train, double *sem_test, double *out_fit_train, double *out_fit_test) {
+void sem_fitness(double *set, double *sem_train, double *sem_test, double *out_fit) {
 	int tig = blockIdx.x * blockDim.x + threadIdx.x;
 	if (tig == 0) {
 		double d = 0;
@@ -212,14 +212,14 @@ void sem_fitness(double *set, double *sem_train, double *sem_test, double *out_f
 			double yy = getDataset(NUM_VARIABLE_SYMBOLS, i, set);
 			d += ERROR_FUNC(yy, sem_train[i]);
 		}
-		*out_fit_train = d / double(NROWS_TRAIN);
+		out_fit[0] = d / double(NROWS_TRAIN);
 	} else if (tig == 1) {
 		double d = 0;
 		for (int i = 0; i < NROWS_TEST; i++) {
 			double yy = getDataset(NUM_VARIABLE_SYMBOLS, i+NROWS_TRAIN, set);
 			d += ERROR_FUNC(yy, sem_test[i]);
 		}
-		*out_fit_test = d / double(NROWS_TEST);
+		out_fit[1] = d / double(NROWS_TEST);
 	}
 }
 

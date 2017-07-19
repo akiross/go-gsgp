@@ -206,6 +206,7 @@ var (
 	cu_tmp_sem_tot2                   *cuda.Buffer
 
 	cu_tmp_d1, cu_tmp_d2, cu_ls_a, cu_ls_b *cuda.Buffer
+	cu_tmp                                 *cuda.Buffer
 	tmp_sem_train, tmp_sem_test            []cFloat64
 )
 
@@ -900,7 +901,7 @@ func geometric_semantic_crossover(i cInt) {
 			log.Println("Vincitori torneo:", p1, p2)
 		}
 
-		// Create a tree and copy it to unified memory
+		// Copy tree to device memory
 		cu_tmp_tree_arr1.FromHostN(unsafe.Pointer(&rt[0]), C.sizeof_int*len(rt))
 
 		// Evaluate the tree on GPU
@@ -939,10 +940,14 @@ func geometric_semantic_crossover(i cInt) {
 		}
 
 		// Evaluate fitness
-		kern_fit_train.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_train_cases_new[i], cu_tmp_d1, cu_ls_a, cu_ls_b)
-		cu_tmp_d1.FromDevice(unsafe.Pointer(&fit_new[i]))
-		kern_fit_test.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_test_cases_new[i], cu_ls_a, cu_ls_b, cu_tmp_d2)
-		cu_tmp_d2.FromDevice(unsafe.Pointer(&fit_test_new[i]))
+		kern_fit_train.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_train_cases_new[i], cu_tmp, cu_ls_a, cu_ls_b)
+		kern_fit_test.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_test_cases_new[i], cu_ls_a, cu_ls_b, cu_tmp)
+
+		// Perform single data transfer
+		var fits [2]cFloat64
+		cu_tmp.FromDevice(unsafe.Pointer(&fits[0]))
+		fit_new[i] = fits[0]
+		fit_test_new[i] = fits[1]
 
 		//fit_new[i] = cFloat64(cu_tmp_d1.ToFloat64())
 		//fit_test_new[i] = cFloat64(cu_tmp_d2.ToFloat64())
@@ -978,11 +983,12 @@ func geometric_semantic_mutation(i cInt) {
 			log.Println("Mutazione albero 2:", rt2)
 		}
 
-		// Copy trees to GPU
+		// TODO possible single transfer of 2 trees and mut_step
+
+		// Copy trees to GPU and evaluate TODO check if interleaved transfer is slower than using a single transfer
 		cu_tmp_tree_arr1.FromHostN(unsafe.Pointer(&rt1[0]), C.sizeof_int*len(rt1))
-		cu_tmp_tree_arr2.FromHostN(unsafe.Pointer(&rt2[0]), C.sizeof_int*len(rt2))
-		// Evaluate the tree on GPU
 		kern_eval_array.Launch1D(cu_bpg_ds, cu_tpb, 0, cu_sym_val, cu_set, cu_tmp_tree_arr1, cu_tmp_sem_tot1)
+		cu_tmp_tree_arr2.FromHostN(unsafe.Pointer(&rt2[0]), C.sizeof_int*len(rt2))
 		kern_eval_array.Launch1D(cu_bpg_ds, cu_tpb, 0, cu_sym_val, cu_set, cu_tmp_tree_arr2, cu_tmp_sem_tot2)
 
 		if false {
@@ -1001,10 +1007,14 @@ func geometric_semantic_mutation(i cInt) {
 		}
 		// Evaluate fitness
 		//kern_fitness.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_train_cases_new[i], cu_sem_test_cases_new[i], cu_tmp_d1, cu_tmp_d2)
-		kern_fit_train.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_train_cases_new[i], cu_tmp_d1, cu_ls_a, cu_ls_b)
-		cu_tmp_d1.FromDevice(unsafe.Pointer(&fit_new[i]))
-		kern_fit_test.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_test_cases_new[i], cu_ls_a, cu_ls_b, cu_tmp_d2)
-		cu_tmp_d2.FromDevice(unsafe.Pointer(&fit_test_new[i]))
+		kern_fit_train.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_train_cases_new[i], cu_tmp, cu_ls_a, cu_ls_b)
+		kern_fit_test.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_test_cases_new[i], cu_ls_a, cu_ls_b, cu_tmp)
+
+		// Perform single data transfer, faster than two separated transfers
+		var fits [2]cFloat64
+		cu_tmp.FromDevice(unsafe.Pointer(&fits[0]))
+		fit_new[i] = fits[0]
+		fit_test_new[i] = fits[1]
 
 		//fit_new[i] = cFloat64(cu_tmp_d1.ToFloat64())
 		//fit_test_new[i] = cFloat64(cu_tmp_d2.ToFloat64())
@@ -1255,6 +1265,7 @@ func main() {
 	cu_tmp_sem_tot2 = cuda.NewBuffer(C.sizeof_double * (nrow + nrow_test))
 	cu_tmp_tree_arr1 = cuda.NewBuffer(C.sizeof_int * (2 << uint(*config.max_depth_creation+1))) // Storage for generated trees
 	cu_tmp_tree_arr2 = cuda.NewBuffer(C.sizeof_int * (2 << uint(*config.max_depth_creation+1))) // Storage for generated trees
+	cu_tmp = cuda.NewBuffer(C.sizeof_double * 4)
 	cu_tmp_d1 = cuda.NewBuffer(C.sizeof_double)
 	cu_tmp_d2 = cuda.NewBuffer(C.sizeof_double)
 	cu_ls_a = cuda.NewBuffer(C.sizeof_double)
