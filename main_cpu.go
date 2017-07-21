@@ -472,7 +472,7 @@ func create_ramped_pop(p *Population) {
 // Create a new Population. It is possible to pass "seeds", which are
 // s-expressions to be parsed as starting individuals. If too many seeds
 // are provided (greater than config.population_size), it will panic.
-func NewPopulation(nSeeds int) *Population { //seeds ...string) *Population {
+func NewPopulation(nSeeds int) *Population {
 	if nSeeds > *config.population_size {
 		panic("Too many seeds")
 	}
@@ -480,11 +480,7 @@ func NewPopulation(nSeeds int) *Population { //seeds ...string) *Population {
 		individuals: make([]*Node, *config.population_size),
 		num_ind:     cInt(nSeeds), // Number of current individuals in pop
 	}
-	/*
-		for i := range seeds {
-			p.individuals[i] = nil //read_sem(seeds[i])
-		}
-	*/
+
 	return p
 }
 

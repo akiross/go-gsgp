@@ -84,7 +84,6 @@ type Config struct {
 	minimization_problem   *bool    // True if we are minimizing, false if maximizing
 	path_in, path_test     *string  // Paths for input data files
 	rng_seed               *int64   // Seed for random numbers
-	num_workers            *int     // Number of concurrent workers
 	of_train, of_test      *string  // Paths for output fitness files
 	of_timing              *string  // Path for file with timings
 	error_measure          *string  // Error measure to use for fitness
@@ -138,7 +137,6 @@ var (
 		path_in:                flag.String("train_file", "", "Path for the train file"),
 		path_test:              flag.String("test_file", "", "Path for the test file"),
 		rng_seed:               flag.Int64("seed", time.Now().UnixNano(), "Specify a seed for the RNG (uses time by default)"),
-		num_workers:            flag.Int("num_workers", runtime.NumCPU(), "Number of concurrent workers"),
 		of_train:               flag.String("out_file_train_fitness", "fitnesstrain.txt", "Path for the output file with train fitness data"),
 		of_test:                flag.String("out_file_test_fitness", "fitnesstest.txt", "Path for the output file with test fitness data"),
 		of_timing:              flag.String("out_file_exec_timing", "execution_time.txt", "Path for the output file containing timings"),
@@ -506,17 +504,15 @@ func create_ramped_pop(p *Population) {
 // Create a new Population. It is possible to pass "seeds", which are
 // s-expressions to be parsed as starting individuals. If too many seeds
 // are provided (greater than config.population_size), it will panic.
-func NewPopulation(seeds ...string) *Population {
-	if len(seeds) > *config.population_size {
+func NewPopulation(nSeeds int) *Population {
+	if nSeeds > *config.population_size {
 		panic("Too many seeds")
 	}
 	p := &Population{
 		individuals: make([]*Node, *config.population_size),
-		num_ind:     cInt(len(seeds)),
+		num_ind:     cInt(nSeeds), // Number of current individuals in pop
 	}
-	for i := range seeds {
-		p.individuals[i] = read_sem(seeds[i])
-	}
+
 	return p
 }
 
@@ -648,7 +644,7 @@ func tree_to_array(root *Node) []cInt {
 			t[0] = cInt(n.root.id)
 			for c := range n.children {
 				t[c+1] = cInt(len(t)) + base
-				ct := rec_build(n.children[c], t[c+1]) //base+n.root.arity+1)
+				ct := rec_build(n.children[c], t[c+1])
 				t = append(t, ct...)
 			}
 			return t
@@ -674,27 +670,31 @@ func add_symbol(name string) *Symbol {
 	return sym
 }
 
-// Reads the file and returns a node that represents a semantic
-func read_sem(path string) *Node {
+// Reads the file and returns their semantic
+func read_sem(path string) Semantic {
 	file, err := os.Open(path)
 	if err != nil {
 		panic(err)
 	}
 	defer file.Close()
-	// Output node, has no symbol because it's a dummy node
-	node := &Node{nil, nil, nil}
+	// Output semantics
+	var sem = make(Semantic, nrow+nrow_test)
 	// There should be one line for each train and test case
 	input := bufio.NewScanner(file)
 	var i int
 	for i = 0; input.Scan() && i < nrow+nrow_test; i++ {
 		s := input.Text()
-		sym := add_symbol(s)
-		node.children = append(node.children, &Node{sym, nil, nil})
+		val, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			panic("Cannot parse semantic value " + s)
+		}
+		sem[i] = cFloat64(val)
 	}
 	if i != nrow+nrow_test {
+		log.Println("Missing semantic values in", path, "expected", nrow+nrow_test, "but got", i)
 		panic("Not enough values when reading semantic file")
 	}
-	return node
+	return sem
 }
 
 // Implements a protected division. If the denominator is equal to 0 the function returns 1 as a result of the division;
@@ -743,13 +743,15 @@ func eval_arrays(tree []cInt, start cInt, i cInt) cFloat64 {
 // Evaluate is called once, after individuals have been initialized for the first time.
 func evaluate(p *Population) {
 	for i := 0; i < *config.population_size; i++ {
-		arr := tree_to_array(p.individuals[i])
-		// Copy tree to device and evaluate its semantic
-		cu_tmp_tree_arr1.FromHostN(unsafe.Pointer(&arr[0]), C.sizeof_int*len(arr))
-		kern_eval_array.Launch1D(cu_bpg_ds, cu_tpb, 0, cu_sym_val, cu_set, cu_tmp_tree_arr1, cu_tmp_sem_tot1)
-		// Copy semantic into separated arrays
-		kern_copy_split.Launch1D(cu_bpg_ds, cu_tpb, 0, cu_sem_train_cases[i], cu_sem_test_cases[i], cu_tmp_sem_tot1)
-
+		// Some individuals might have been seeded: in this case, we have the semantic already
+		if p.individuals[i] != nil {
+			arr := tree_to_array(p.individuals[i])
+			// Copy tree to device and evaluate its semantic
+			cu_tmp_tree_arr1.FromHostN(unsafe.Pointer(&arr[0]), C.sizeof_int*len(arr))
+			kern_eval_array.Launch1D(cu_bpg_ds, cu_tpb, 0, cu_sym_val, cu_set, cu_tmp_tree_arr1, cu_tmp_sem_tot1)
+			// Copy semantic into separated arrays
+			kern_copy_split.Launch1D(cu_bpg_ds, cu_tpb, 0, cu_sem_train_cases[i], cu_sem_test_cases[i], cu_tmp_sem_tot1)
+		}
 		// Compute fitness
 		kern_fit_train.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_train_cases[i], cu_tmp, cu_ls_a, cu_ls_b)
 		kern_fit_test.Launch1D(1, cu_tpb, 0, cu_set, cu_sem_test_cases[i], cu_ls_a, cu_ls_b, cu_tmp)
@@ -757,6 +759,7 @@ func evaluate(p *Population) {
 		cu_tmp.FromDevice(unsafe.Pointer(&tmp_fits))
 		fit[i] = tmp_fits[0]
 		fit_test[i] = tmp_fits[1]
+
 	}
 }
 
@@ -940,7 +943,6 @@ func create_or_panic(path string) io.WriteCloser {
 
 	f, err := os.Create(path)
 	if err != nil {
-		//f = ioutil.Discard
 		panic(err)
 	}
 	return f
@@ -1165,10 +1167,19 @@ func main() {
 	var start time.Time
 	start = time.Now()
 
-	// Create population and feed
-	p := NewPopulation(sem_seed...)
+	// Create population, prepare for seeding
+	p := NewPopulation(len(sem_seed)) //(sem_seed...)
 	// Prepare tables (memory allocation)
 	init_tables()
+
+	// Seed individuals
+	for i := range sem_seed {
+		p.individuals[i] = nil
+		sem := read_sem(sem_seed[i])
+		cu_sem_train_cases[i].FromHostN(unsafe.Pointer(&sem[0]), nrow)
+		cu_sem_test_cases[i].FromHostN(unsafe.Pointer(&sem[nrow]), nrow_test)
+	}
+
 	initialize_population(p, cInt(*config.init_type))
 	// Evaluate each individual in the population, filling fitnesses and finding best individual
 	evaluate(p)
