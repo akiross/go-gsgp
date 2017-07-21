@@ -857,36 +857,142 @@ func geometric_semantic_mutation(i cInt) {
 // Mean Squared Difference between the semantic and the dataset.
 // From the dataset, only sem_size elements, starting from sem_offs, will be considered in the computation
 func fitness_of_semantic_train(sem Semantic, sem_size, sem_offs cInt) (d, a, b cFloat64) {
-	var avg_out, avg_tar cFloat64
-	for i := sem_offs; i < sem_size+sem_offs; i++ {
-		avg_out += sem[i-sem_offs]
-		avg_tar += set[i].y_value
-	}
-	avg_out /= cFloat64(sem_size)
-	avg_tar /= cFloat64(sem_size)
+	if *config.n_workers > 1 {
+		n_workers := cInt(*config.n_workers)
+		block := (sem_size + n_workers - 1) / n_workers
 
-	var num, den cFloat64
-	for i := sem_offs; i < sem_offs+sem_size; i++ {
-		odiff := sem[i-sem_offs] - avg_out
-		num += (set[i].y_value - avg_tar) * odiff
-		den += odiff * odiff
-	}
-	b = num / den
-	a = avg_tar - b*avg_out
+		var wg sync.WaitGroup
 
-	for i := sem_offs; i < sem_offs+sem_size; i++ {
-		d += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
+		var (
+			sum_out = make([]cFloat64, n_workers)
+			sum_tar = make([]cFloat64, n_workers)
+			sum_oxo = make([]cFloat64, n_workers)
+			sum_oxt = make([]cFloat64, n_workers)
+		)
+
+		wg.Add(int(n_workers))
+		for w := cInt(0); w < n_workers; w++ {
+			go func(id, start, end cInt) {
+				// Check limit
+				if end > sem_size {
+					end = sem_size
+				}
+				// Perform evaluation
+				for i := sem_offs + start; i < sem_offs+end; i++ {
+					t := set[i].y_value
+					y := sem[i-sem_offs]
+					sum_out[id] += y
+					sum_tar[id] += t
+					sum_oxo[id] += y * y
+					sum_oxt[id] += y * t
+				}
+				wg.Done()
+			}(w, block*w, block*(w+1))
+		}
+		wg.Wait()
+
+		tot_out := sum_out[0]
+		tot_tar := sum_tar[0]
+		tot_oxo := sum_oxo[0]
+		tot_oxt := sum_oxt[0]
+		for i := cInt(1); i < n_workers; i++ {
+			tot_out += sum_out[i]
+			tot_tar += sum_tar[i]
+			tot_oxo += sum_oxo[i]
+			tot_oxt += sum_oxt[i]
+		}
+
+		avg_out := tot_out / cFloat64(sem_size)
+		avg_tar := tot_tar / cFloat64(sem_size)
+
+		num := tot_oxt - tot_tar*avg_out - tot_out*avg_tar + cFloat64(sem_size)*avg_out*avg_tar
+		den := tot_oxo - 2.0*tot_out*avg_out + cFloat64(sem_size)*avg_out*avg_out
+
+		b = num / den
+		a = avg_tar - b*avg_out
+
+		par_d := make([]cFloat64, n_workers)
+		wg.Add(int(n_workers))
+		for w := cInt(0); w < n_workers; w++ {
+			go func(id, start, end cInt) {
+				// Check limit
+				if end > sem_size {
+					end = sem_size
+				}
+				// Perform evaluation
+				for i := sem_offs + start; i < sem_offs+end; i++ {
+					par_d[id] += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
+				}
+				wg.Done()
+			}(w, block*w, block*(w+1))
+		}
+		wg.Wait()
+		d = par_d[0]
+		for i := cInt(1); i < n_workers; i++ {
+			d += par_d[i]
+		}
+		d = d / cFloat64(sem_size)
+	} else {
+		var avg_out, avg_tar cFloat64
+		for i := sem_offs; i < sem_size+sem_offs; i++ {
+			avg_out += sem[i-sem_offs]
+			avg_tar += set[i].y_value
+		}
+		avg_out /= cFloat64(sem_size)
+		avg_tar /= cFloat64(sem_size)
+
+		var num, den cFloat64
+		for i := sem_offs; i < sem_offs+sem_size; i++ {
+			odiff := sem[i-sem_offs] - avg_out
+			num += (set[i].y_value - avg_tar) * odiff
+			den += odiff * odiff
+		}
+		b = num / den
+		a = avg_tar - b*avg_out
+
+		for i := sem_offs; i < sem_offs+sem_size; i++ {
+			d += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
+		}
+		d = d / cFloat64(sem_size)
 	}
-	d = d / cFloat64(sem_size)
 	return d, a, b
 }
 
 func fitness_of_semantic_test(sem Semantic, sem_size, sem_offs cInt, a, b cFloat64) cFloat64 {
 	var d cFloat64
-	for i := sem_offs; i < sem_offs+sem_size; i++ {
-		d += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
+
+	if *config.n_workers > 1 {
+		n_workers := cInt(*config.n_workers)
+		block := (sem_size + n_workers - 1) / n_workers
+
+		var wg sync.WaitGroup
+		par_d := make([]cFloat64, n_workers)
+		wg.Add(int(n_workers))
+		for w := cInt(0); w < n_workers; w++ {
+			go func(id, start, end cInt) {
+				// Check limit
+				if end > sem_size {
+					end = sem_size
+				}
+				// Perform evaluation
+				for i := sem_offs + start; i < sem_offs+end; i++ {
+					par_d[id] += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
+				}
+				wg.Done()
+			}(w, block*w, block*(w+1))
+		}
+		wg.Wait()
+		d = par_d[0]
+		for i := cInt(1); i < n_workers; i++ {
+			d += par_d[i]
+		}
+		return d / cFloat64(sem_size)
+	} else {
+		for i := sem_offs; i < sem_offs+sem_size; i++ {
+			d += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
+		}
+		return d / cFloat64(sem_size)
 	}
-	return d / cFloat64(sem_size)
 }
 
 // Finds the best individual in the population
