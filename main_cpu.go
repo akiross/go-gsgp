@@ -77,11 +77,9 @@ type Config struct {
 	minimization_problem   *bool    // True if we are minimizing, false if maximizing
 	path_in, path_test     *string  // Paths for input data files
 	rng_seed               *int64   // Seed for random numbers
-	//use_goroutines         *bool    // Flag that enables concurrent computation
-	num_workers       *int    // Number of concurrent workers
-	of_train, of_test *string // Paths for output fitness files
-	of_timing         *string // Path for file with timings
-	error_measure     *string // Error measure to use for fitness
+	of_train, of_test      *string  // Paths for output fitness files
+	of_timing              *string  // Path for file with timings
+	error_measure          *string  // Error measure to use for fitness
 }
 
 // Symbol represents a symbol of the set T (terminal symbols) or F (functional symbols).
@@ -132,12 +130,10 @@ var (
 		path_in:                flag.String("train_file", "", "Path for the train file"),
 		path_test:              flag.String("test_file", "", "Path for the test file"),
 		rng_seed:               flag.Int64("seed", time.Now().UnixNano(), "Specify a seed for the RNG (uses time by default)"),
-		//use_goroutines:         flag.Bool("use_goroutines", false, "Enable goroutines in evaluation of fitness"),
-		num_workers:   flag.Int("num_workers", runtime.NumCPU(), "Number of concurrent workers"),
-		of_train:      flag.String("out_file_train_fitness", "fitnesstrain.txt", "Path for the output file with train fitness data"),
-		of_test:       flag.String("out_file_test_fitness", "fitnesstest.txt", "Path for the output file with test fitness data"),
-		of_timing:     flag.String("out_file_exec_timing", "execution_time.txt", "Path for the output file containing timings"),
-		error_measure: flag.String("error_measure", "MSE", "Error measures to use for fitness (MSE, MAE or MRE)"),
+		of_train:               flag.String("out_file_train_fitness", "fitnesstrain.txt", "Path for the output file with train fitness data"),
+		of_test:                flag.String("out_file_test_fitness", "fitnesstest.txt", "Path for the output file with test fitness data"),
+		of_timing:              flag.String("out_file_exec_timing", "execution_time.txt", "Path for the output file containing timings"),
+		error_measure:          flag.String("error_measure", "MSE", "Error measures to use for fitness (MSE, MAE or MRE)"),
 	}
 	cpuprofile  = flag.String("cpuprofile", "", "Write CPU profile to file")
 	memprofile  = flag.String("memprofile", "", "Write memory profile to file")
@@ -615,7 +611,7 @@ func tree_to_array(root *Node) []cInt {
 			t[0] = cInt(n.root.id)
 			for c := range n.children {
 				t[c+1] = cInt(len(t)) + base
-				ct := rec_build(n.children[c], t[c+1]) //base+n.root.arity+1)
+				ct := rec_build(n.children[c], t[c+1])
 				t = append(t, ct...)
 			}
 			return t
@@ -683,13 +679,6 @@ func terminal_value(i cInt, sym *Symbol) cFloat64 {
 		return sym.value
 	}
 }
-
-/*
-// Evaluates evaluates a tree on the i-th input instance
-func eval(tree *Node, i cInt) cFloat64 {
-	return eval_arrays(tree_to_array(tree), 0, i)
-}
-*/
 
 func eval_arrays(tree []cInt, start cInt, i cInt) cFloat64 {
 	switch {
@@ -775,12 +764,9 @@ func geometric_semantic_crossover(i cInt) {
 		// Replace the individual with the crossover of two parents
 		p1 := tournament_selection()
 		p2 := tournament_selection()
-		//log.Println("Albero generato:", rt)
-		//log.Println("Vincitori torneo:", p1, p2)
 
 		var ls_a, ls_b cFloat64
 		// Generate a random tree and compute its semantic (train and test)
-		//sem_rt, sem_rt_test := random_tree_semantics()
 		sem_rt := semantic_evaluate_array(rt, cInt(nrow), 0)
 		sem_rt_test := semantic_evaluate_array(rt, cInt(nrow_test), cInt(nrow))
 
@@ -797,8 +783,6 @@ func geometric_semantic_crossover(i cInt) {
 		}
 		fit_test_new[i] = fitness_of_semantic_test(sem_test_cases_new[i], cInt(nrow_test), cInt(nrow), ls_a, ls_b)
 	} else {
-		//log.Println("Crossover del migliore, copio e basta")
-
 		// The best individual will not be changed
 		copy(sem_train_cases_new[i], sem_train_cases[i])
 		copy(sem_test_cases_new[i], sem_test_cases[i])
@@ -815,10 +799,6 @@ func geometric_semantic_mutation(i cInt) {
 		// Create two random trees and copy it to unified memory
 		rt1 := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
 		rt2 := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
-
-		//log.Println("Mutazione con step:", mut_step)
-		//log.Println("Mutazione albero 1:", rt1)
-		//log.Println("Mutazione albero 2:", rt2)
 
 		var ls_a, ls_b cFloat64
 		// Replace the individual with a mutated version
@@ -847,10 +827,7 @@ func geometric_semantic_mutation(i cInt) {
 
 // Given a semantic, compute the fitness of a subset of that semantic as the
 // Mean Squared Difference between the semantic and the dataset.
-// Only sem_size elements, starting from sem_offs, will be considered in the computation
-//
-// TODO since sem_size and sem_offs are misleading, we can replace it directly with a slice of []Instance
-// and infer sem_size from that (sem must have the same length)
+// From the dataset, only sem_size elements, starting from sem_offs, will be considered in the computation
 func fitness_of_semantic_train(sem Semantic, sem_size, sem_offs cInt) (d, a, b cFloat64) {
 	var avg_out, avg_tar cFloat64
 	for i := sem_offs; i < sem_size+sem_offs; i++ {
@@ -938,7 +915,6 @@ func create_or_panic(path string) io.WriteCloser {
 
 	f, err := os.Create(path)
 	if err != nil {
-		//f = ioutil.Discard
 		panic(err)
 	}
 	return f
@@ -999,10 +975,6 @@ func main() {
 		fmt.Println("Please specify the test dataset using the test_file option")
 		return
 	}
-
-	//if *config.use_goroutines {
-	log.Println("Using goroutines with", *config.num_workers, "workers")
-	//}
 
 	switch strings.ToUpper(*config.error_measure) {
 	case "MAE":
@@ -1070,17 +1042,13 @@ func main() {
 		log.Println("Generation", num_gen+1)
 		for k := 0; k < *config.population_size; k++ {
 			rand_num := rand.Float64()
-			//log.Println("Numero per decisione:", rand_num)
 			switch {
 			case rand_num < *config.p_crossover:
-				//log.Println("Eseguo crossover di individuo", k, *config.population_size)
 				geometric_semantic_crossover(cInt(k))
 			case rand_num < *config.p_crossover+*config.p_mutation:
-				//log.Println("Eseguo mutazione")
 				reproduction(cInt(k))
 				geometric_semantic_mutation(cInt(k))
 			default:
-				//log.Println("Eseguo riproduzione")
 				reproduction(cInt(k))
 			}
 		}
