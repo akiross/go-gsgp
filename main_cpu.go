@@ -472,17 +472,19 @@ func create_ramped_pop(p *Population) {
 // Create a new Population. It is possible to pass "seeds", which are
 // s-expressions to be parsed as starting individuals. If too many seeds
 // are provided (greater than config.population_size), it will panic.
-func NewPopulation(seeds ...string) *Population {
-	if len(seeds) > *config.population_size {
+func NewPopulation(nSeeds int) *Population { //seeds ...string) *Population {
+	if nSeeds > *config.population_size {
 		panic("Too many seeds")
 	}
 	p := &Population{
 		individuals: make([]*Node, *config.population_size),
-		num_ind:     cInt(len(seeds)),
+		num_ind:     cInt(nSeeds), // Number of current individuals in pop
 	}
-	for i := range seeds {
-		p.individuals[i] = read_sem(seeds[i])
-	}
+	/*
+		for i := range seeds {
+			p.individuals[i] = nil //read_sem(seeds[i])
+		}
+	*/
 	return p
 }
 
@@ -640,27 +642,30 @@ func add_symbol(name string) *Symbol {
 	return sym
 }
 
-// Reads the file and returns a node that represents a semantic
-func read_sem(path string) *Node {
+// Reads the file and returns their semantic
+func read_sem(path string) Semantic {
 	file, err := os.Open(path)
 	if err != nil {
 		panic(err)
 	}
 	defer file.Close()
-	// Output node, has no symbol because it's a dummy node
-	node := &Node{nil, nil, nil}
+	// Output semantics
+	var sem = make(Semantic, nrow+nrow_test)
 	// There should be one line for each train and test case
 	input := bufio.NewScanner(file)
 	var i int
 	for i = 0; input.Scan() && i < nrow+nrow_test; i++ {
 		s := input.Text()
-		sym := add_symbol(s)
-		node.children = append(node.children, &Node{sym, nil, nil})
+		val, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			panic("Cannot parse semantic value " + s)
+		}
+		sem[i] = cFloat64(val)
 	}
 	if i != nrow+nrow_test {
 		panic("Not enough values when reading semantic file")
 	}
-	return node
+	return sem
 }
 
 // Implements a protected division. If the denominator is equal to 0 the function returns 1 as a result of the division;
@@ -710,13 +715,14 @@ func eval_arrays(tree []cInt, start cInt, i cInt) cFloat64 {
 // This function fills fit using semantic_evaluate
 func evaluate(p *Population) {
 	for i := 0; i < *config.population_size; i++ {
-		arr := tree_to_array(p.individuals[i])
-
+		// Some individuals might have been seeded: in this case, we have the semantic already
+		if p.individuals[i] != nil {
+			arr := tree_to_array(p.individuals[i])
+			sem_train_cases[i] = semantic_evaluate_array(arr, cInt(nrow), 0)
+			sem_test_cases[i] = semantic_evaluate_array(arr, cInt(nrow_test), cInt(nrow))
+		}
 		var a, b cFloat64
-		sem_train_cases[i] = semantic_evaluate_array(arr, cInt(nrow), 0)
 		fit[i], a, b = fitness_of_semantic_train(sem_train_cases[i], cInt(nrow), 0)
-
-		sem_test_cases[i] = semantic_evaluate_array(arr, cInt(nrow_test), cInt(nrow))
 		fit_test[i] = fitness_of_semantic_test(sem_test_cases[i], cInt(nrow_test), cInt(nrow), a, b)
 	}
 }
@@ -1158,10 +1164,19 @@ func main() {
 	var start time.Time
 	start = time.Now()
 
-	// Create population and feed
-	p := NewPopulation(sem_seed...)
+	// Create population, prepare for seeding
+	p := NewPopulation(len(sem_seed)) //(sem_seed...)
 	// Prepare tables (memory allocation)
 	init_tables()
+
+	// Seed individuals
+	for i := range sem_seed {
+		p.individuals[i] = nil
+		sem := read_sem(sem_seed[i])
+		sem_train_cases[i] = sem[:nrow]
+		sem_test_cases[i] = sem[nrow:]
+	}
+
 	initialize_population(p, cInt(*config.init_type))
 	// Evaluate each individual in the population, filling fitnesses and finding best individual
 	evaluate(p)
