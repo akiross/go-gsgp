@@ -81,6 +81,7 @@ type Config struct {
 	of_train, of_test      *string  // Paths for output fitness files
 	of_timing              *string  // Path for file with timings
 	error_measure          *string  // Error measure to use for fitness
+	n_workers              *int     // Number of workers to use (goroutines)
 }
 
 // Symbol represents a symbol of the set T (terminal symbols) or F (functional symbols).
@@ -135,6 +136,7 @@ var (
 		of_test:                flag.String("out_file_test_fitness", "fitnesstest.txt", "Path for the output file with test fitness data"),
 		of_timing:              flag.String("out_file_exec_timing", "execution_time.txt", "Path for the output file containing timings"),
 		error_measure:          flag.String("error_measure", "MSE", "Error measures to use for fitness (MSE, MAE or MRE)"),
+		n_workers:              flag.Int("workers", runtime.NumCPU(), "Number of workers (goroutines) to use"),
 	}
 	cpuprofile  = flag.String("cpuprofile", "", "Write CPU profile to file")
 	memprofile  = flag.String("memprofile", "", "Write memory profile to file")
@@ -722,8 +724,8 @@ func evaluate(p *Population) {
 func semantic_evaluate_array(tree []cInt, sem_size, sem_offs cInt) Semantic {
 	val := make(Semantic, sem_size) // Array with semantic to be computed
 
-	if true {
-		n_workers := cInt(runtime.NumCPU())
+	if *config.n_workers > 1 {
+		n_workers := cInt(*config.n_workers)
 		block := (sem_size + n_workers - 1) / n_workers
 
 		var wg sync.WaitGroup
