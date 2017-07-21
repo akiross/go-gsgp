@@ -717,40 +717,23 @@ func eval_arrays(tree []cInt, start cInt, i cInt) cFloat64 {
 // Evaluate is called once, after individuals have been initialized for the first time.
 // This function fills fit using semantic_evaluate
 func evaluate(p *Population) {
-	/*
-		f, s := semantic_evaluate(p.individuals[0], cInt(nrow), 0)
-		fit[0] = f
-		copy(sem_train_cases[0], s)
-
-		f, s = semantic_evaluate(p.individuals[0], cInt(nrow_test), cInt(nrow))
-		fit_test[0] = f
-		copy(sem_test_cases[0], s)
-	*/
 	for i := 0; i < *config.population_size; i++ {
-		f, s := semantic_evaluate(p.individuals[i], cInt(nrow), 0)
-		fit[i] = f
-		copy(sem_train_cases[i], s)
+		arr := tree_to_array(p.individuals[i])
 
-		f, s = semantic_evaluate(p.individuals[i], cInt(nrow_test), cInt(nrow))
-		fit_test[i] = f
-		copy(sem_test_cases[i], s)
+		sem_train_cases[i] = semantic_evaluate_array(arr, cInt(nrow), 0)
+		fit[i], a, b = fitness_of_semantic_train(sem_train_cases[i], cInt(nrow), 0)
+
+		sem_test_cases[i] = semantic_evaluate_array(arr, cInt(nrow_test), cInt(nrow))
+		fit_test[i] = fitness_of_semantic_train(sem_test_cases[i], cInt(nrow_test), cInt(nrow), a, b)
 	}
 }
 
-// Calculates semantic and training fitness of an individual (representing as a tree)
-func semantic_evaluate(el *Node, sem_size, sem_offs cInt) (cFloat64, Semantic) {
-	// Convert tree to array and use
-	arr := tree_to_array(el)
-	return semantic_evaluate_array(&arr, sem_size, sem_offs)
-}
-
-func semantic_evaluate_array(tree *[]cInt, sem_size, sem_offs cInt) (cFloat64, Semantic) {
+func semantic_evaluate_array(tree []cInt, sem_size, sem_offs cInt) Semantic {
 	val := make(Semantic, sem_size) // Array with semantic to be computed
 	for i := sem_offs; i < sem_size+sem_offs; i++ {
-		val[i-sem_offs] = eval_arrays(*tree, 0, i)
+		val[i-sem_offs] = eval_arrays(tree, 0, i)
 	}
-	d, _, _ := fitness_of_semantic_train(val, sem_size, sem_offs)
-	return d, val
+	return val
 }
 
 // Implements a tournament selection procedure
@@ -798,8 +781,8 @@ func geometric_semantic_crossover(i cInt) {
 		var ls_a, ls_b cFloat64
 		// Generate a random tree and compute its semantic (train and test)
 		//sem_rt, sem_rt_test := random_tree_semantics()
-		_, sem_rt := semantic_evaluate_array(&rt, cInt(nrow), 0)
-		_, sem_rt_test := semantic_evaluate_array(&rt, cInt(nrow_test), cInt(nrow))
+		sem_rt := semantic_evaluate_array(rt, cInt(nrow), 0)
+		sem_rt_test := semantic_evaluate_array(rt, cInt(nrow_test), cInt(nrow))
 
 		// Compute the geometric semantic (train)
 		for j := 0; j < nrow; j++ {
@@ -839,11 +822,11 @@ func geometric_semantic_mutation(i cInt) {
 
 		var ls_a, ls_b cFloat64
 		// Replace the individual with a mutated version
-		_, sem_rt1 := semantic_evaluate_array(&rt1, cInt(nrow), 0)
-		_, sem_rt1_test := semantic_evaluate_array(&rt1, cInt(nrow_test), cInt(nrow))
+		sem_rt1 := semantic_evaluate_array(rt1, cInt(nrow), 0)
+		sem_rt1_test := semantic_evaluate_array(rt1, cInt(nrow_test), cInt(nrow))
 
-		_, sem_rt2 := semantic_evaluate_array(&rt2, cInt(nrow), 0)
-		_, sem_rt2_test := semantic_evaluate_array(&rt2, cInt(nrow_test), cInt(nrow))
+		sem_rt2 := semantic_evaluate_array(rt2, cInt(nrow), 0)
+		sem_rt2_test := semantic_evaluate_array(rt2, cInt(nrow_test), cInt(nrow))
 
 		for j := 0; j < nrow; j++ {
 			sigmoid1 := 1 / (1 + exp64(-sem_rt1[j]))
