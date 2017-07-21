@@ -31,7 +31,6 @@ import (
 	"math"
 	"math/rand"
 	"os"
-	"runtime"
 	"runtime/pprof"
 	"strconv"
 	"strings"
@@ -709,11 +708,12 @@ func evaluate(p *Population) {
 	for i := 0; i < *config.population_size; i++ {
 		arr := tree_to_array(p.individuals[i])
 
+		var a, b cFloat64
 		sem_train_cases[i] = semantic_evaluate_array(arr, cInt(nrow), 0)
 		fit[i], a, b = fitness_of_semantic_train(sem_train_cases[i], cInt(nrow), 0)
 
 		sem_test_cases[i] = semantic_evaluate_array(arr, cInt(nrow_test), cInt(nrow))
-		fit_test[i] = fitness_of_semantic_train(sem_test_cases[i], cInt(nrow_test), cInt(nrow), a, b)
+		fit_test[i] = fitness_of_semantic_test(sem_test_cases[i], cInt(nrow_test), cInt(nrow), a, b)
 	}
 }
 
