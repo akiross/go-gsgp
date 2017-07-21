@@ -31,9 +31,11 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"runtime"
 	"runtime/pprof"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -719,8 +721,32 @@ func evaluate(p *Population) {
 
 func semantic_evaluate_array(tree []cInt, sem_size, sem_offs cInt) Semantic {
 	val := make(Semantic, sem_size) // Array with semantic to be computed
-	for i := sem_offs; i < sem_size+sem_offs; i++ {
-		val[i-sem_offs] = eval_arrays(tree, 0, i)
+
+	if true {
+		n_workers := cInt(runtime.NumCPU())
+		block := (sem_size + n_workers - 1) / n_workers
+
+		var wg sync.WaitGroup
+
+		wg.Add(int(n_workers))
+		for w := cInt(0); w < n_workers; w++ {
+			go func(start, end cInt) {
+				// Check limit
+				if end > sem_size {
+					end = sem_size
+				}
+				// Perform evaluation loop
+				for i := sem_offs + start; i < sem_offs+end; i++ {
+					val[i-sem_offs] = eval_arrays(tree, 0, i)
+				}
+				wg.Done()
+			}(block*w, block*(w+1))
+		}
+		wg.Wait()
+	} else {
+		for i := sem_offs; i < sem_size+sem_offs; i++ {
+			val[i-sem_offs] = eval_arrays(tree, 0, i)
+		}
 	}
 	return val
 }
