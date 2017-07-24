@@ -1067,6 +1067,7 @@ func main() {
 	defer fitness_test.Close()
 
 	// Seed RNG
+	log.Println("Random seed:", *config.rng_seed)
 	rand.Seed(*config.rng_seed)
 	// Read training and testing datasets (populate nvar, nrow and set)
 	read_input_data(*config.path_in, *config.path_test)
