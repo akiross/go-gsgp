@@ -855,6 +855,8 @@ func geometric_semantic_mutation(i cInt) {
 	// Mutation happens after reproduction: elite are reproduced but are not mutated
 }
 
+//var contatore_den_totali, contatore_den_nulli int
+
 // Given a semantic, compute the fitness of a subset of that semantic as the
 // Mean Squared Difference between the semantic and the dataset.
 // From the dataset, only sem_size elements, starting from sem_offs, will be considered in the computation
@@ -910,7 +912,14 @@ func fitness_of_semantic_train(sem Semantic, sem_size, sem_offs cInt) (d, a, b c
 		num := tot_oxt - tot_tar*avg_out - tot_out*avg_tar + cFloat64(sem_size)*avg_out*avg_tar
 		den := tot_oxo - 2.0*tot_out*avg_out + cFloat64(sem_size)*avg_out*avg_out
 
-		b = num / den
+		// Avoid division by 0
+		if den != 0 {
+			b = num / den
+		} else {
+			b = 0
+			//contatore_den_nulli++
+		}
+		//contatore_den_totali++
 		a = avg_tar - b*avg_out
 
 		par_d := make([]cFloat64, n_workers)
@@ -956,6 +965,9 @@ func fitness_of_semantic_train(sem Semantic, sem_size, sem_offs cInt) (d, a, b c
 			d += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
 		}
 		d = d / cFloat64(sem_size)
+	}
+	if math.IsNaN(float64(d)) {
+		log.Println("A fitness is NaN!")
 	}
 	return d, a, b
 }
@@ -1209,6 +1221,7 @@ func main() {
 		fmt.Fprintln(executiontime, time.Since(start))
 	}
 	log.Println("Total elapsed time since start:", time.Since(start))
+	//log.Println("Contatore den nulli:", contatore_den_nulli, "su", contatore_den_totali, "fa", float64(contatore_den_nulli)/float64(contatore_den_totali))
 
 	if *memprofile != "" {
 		f, err := os.Create(*memprofile)

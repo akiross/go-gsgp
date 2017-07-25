@@ -177,7 +177,12 @@ void sem_fitness_train(double *set, double *sem_train, double *out_fit_train, do
 		double num = sum_oxt - sum_tar * avg_out - sum_out * avg_tar + NROWS_TRAIN * avg_out * avg_tar; 
 		double den = sum_oxo - 2.0 * sum_out * avg_out + NROWS_TRAIN * avg_out * avg_out; 
 
-		b = num / den;
+		if (den != 0) {
+			b = num / den;
+		} else {
+			b = 0;
+		}
+
 		a = avg_tar - b * avg_out;
 
 		*out_ls_b = b;
