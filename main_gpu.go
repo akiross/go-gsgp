@@ -140,7 +140,7 @@ var (
 		of_train:               flag.String("out_file_train_fitness", "fitnesstrain.txt", "Path for the output file with train fitness data"),
 		of_test:                flag.String("out_file_test_fitness", "fitnesstest.txt", "Path for the output file with test fitness data"),
 		of_timing:              flag.String("out_file_exec_timing", "execution_time.txt", "Path for the output file containing timings"),
-		error_measure:          flag.String("error_measure", "MSE", "Error measures to use for fitness (MSE, MAE or MRE)"),
+		error_measure:          flag.String("error_measure", "MSE", "Error measures to use for fitness (MSE, MAE, MRE or RMSE)"),
 	}
 	cpuprofile  = flag.String("cpuprofile", "", "Write CPU profile to file")
 	memprofile  = flag.String("memprofile", "", "Write memory profile to file")
@@ -172,8 +172,6 @@ var (
 
 	semchan chan Semantic // Channel to move semantics fromm device to host
 	cmdchan chan int      // Channel where commands are sent
-
-	dist_func func(cFloat64, cFloat64) cFloat64 // Distance function to use for fitness
 
 	ctx *cuda.Context
 
@@ -1025,17 +1023,18 @@ func main() {
 	}
 
 	var cuda_dist string // Which function to use in CUDA for distance
+	var cuda_post_error string = "pass_value"
 
 	switch strings.ToUpper(*config.error_measure) {
 	case "MAE":
-		dist_func = abs_diff
 		cuda_dist = "abs_diff"
 	case "MRE":
-		dist_func = rel_abs_diff
 		cuda_dist = "rel_abs_diff"
 	case "MSE":
-		dist_func = square_diff
 		cuda_dist = "square_diff"
+	case "RMSE":
+		cuda_dist = "square_diff"
+		cuda_post_error = "square_root"
 	default:
 		panic("Unknown error measure: " + *config.error_measure)
 	}
@@ -1148,6 +1147,7 @@ func main() {
 		"NROWS_TOT":              nrow + nrow_test,
 		"NUM_THREADS":            cu_tpb,
 		"ERROR_FUNC":             cuda_dist,
+		"POST_ERR_FUNC":          cuda_post_error,
 	})
 
 	// Prepare kernels to eval and reduce trees

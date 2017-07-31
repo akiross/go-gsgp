@@ -119,6 +119,16 @@ void sem_copy_split(double *dest_train, double *dest_test, double *src_tot) {
 	}
 }
 
+extern "C" __device__
+double pass_value(double v) {
+	return v;
+}
+
+extern "C" __device__
+double square_root(double v) {
+	return sqrt(v);
+}
+
 // Runs with 32 threads
 extern "C" __global__
 void sem_fitness_train(double *set, double *sem_train, double *out_fit_train, double *out_ls_a, double *out_ls_b) {
@@ -210,7 +220,7 @@ void sem_fitness_train(double *set, double *sem_train, double *out_fit_train, do
 		for (int i = 1; i < 32; i++) {
 			shm[0] += shm[i];
 		}
-		out_fit_train[0] = shm[0] / double(NROWS_TRAIN);
+		out_fit_train[0] = POST_ERR_FUNC(shm[0] / double(NROWS_TRAIN));
 	}
 }
 
@@ -240,7 +250,7 @@ void sem_fitness_test(double *set, double *sem_test, double *ls_a, double *ls_b,
 		for (int i = 1; i < 32; i++) {
 			shm[0] += shm[i];
 		}
-		out_fit_test[1] = shm[0] / double(NROWS_TEST);
+		out_fit_test[1] = POST_ERR_FUNC(shm[0] / double(NROWS_TEST));
 	}
 }
 

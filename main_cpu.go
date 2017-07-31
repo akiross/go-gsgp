@@ -135,7 +135,7 @@ var (
 		of_train:               flag.String("out_file_train_fitness", "fitnesstrain.txt", "Path for the output file with train fitness data"),
 		of_test:                flag.String("out_file_test_fitness", "fitnesstest.txt", "Path for the output file with test fitness data"),
 		of_timing:              flag.String("out_file_exec_timing", "execution_time.txt", "Path for the output file containing timings"),
-		error_measure:          flag.String("error_measure", "MSE", "Error measures to use for fitness (MSE, MAE or MRE)"),
+		error_measure:          flag.String("error_measure", "MSE", "Error measures to use for fitness (MSE, RMSE, MAE or MRE)"),
 		n_workers:              flag.Int("workers", runtime.NumCPU(), "Number of workers (goroutines) to use"),
 	}
 	cpuprofile  = flag.String("cpuprofile", "", "Write CPU profile to file")
@@ -175,6 +175,8 @@ var (
 	cmdchan chan int      // Channel where commands are sent
 
 	dist_func func(cFloat64, cFloat64) cFloat64 // Distance function to use for fitness
+	// Function to call AFTER the average value has been computed (for RMSE)
+	post_error = func(d cFloat64) cFloat64 { return d }
 )
 
 // Define a sink type that works like /dev/null, but can be closed
@@ -942,7 +944,7 @@ func fitness_of_semantic_train(sem Semantic, sem_size, sem_offs cInt) (d, a, b c
 		for i := cInt(1); i < n_workers; i++ {
 			d += par_d[i]
 		}
-		d = d / cFloat64(sem_size)
+		d = post_error(d / cFloat64(sem_size))
 	} else {
 		var avg_out, avg_tar cFloat64
 		for i := sem_offs; i < sem_size+sem_offs; i++ {
@@ -964,7 +966,7 @@ func fitness_of_semantic_train(sem Semantic, sem_size, sem_offs cInt) (d, a, b c
 		for i := sem_offs; i < sem_offs+sem_size; i++ {
 			d += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
 		}
-		d = d / cFloat64(sem_size)
+		d = post_error(d / cFloat64(sem_size))
 	}
 	if math.IsNaN(float64(d)) {
 		log.Println("A fitness is NaN!")
@@ -1000,12 +1002,12 @@ func fitness_of_semantic_test(sem Semantic, sem_size, sem_offs cInt, a, b cFloat
 		for i := cInt(1); i < n_workers; i++ {
 			d += par_d[i]
 		}
-		return d / cFloat64(sem_size)
+		return post_error(d / cFloat64(sem_size))
 	} else {
 		for i := sem_offs; i < sem_offs+sem_size; i++ {
 			d += dist_func(set[i].y_value, a+b*sem[i-sem_offs])
 		}
-		return d / cFloat64(sem_size)
+		return post_error(d / cFloat64(sem_size))
 	}
 }
 
@@ -1131,6 +1133,9 @@ func main() {
 		dist_func = rel_abs_diff
 	case "MSE":
 		dist_func = square_diff
+	case "RMSE":
+		dist_func = square_diff
+		post_error = func(v cFloat64) cFloat64 { return cFloat64(math.Sqrt(float64(v))) }
 	default:
 		panic("Unknown error measure: " + *config.error_measure)
 	}
