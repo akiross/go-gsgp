@@ -129,9 +129,64 @@ double square_root(double v) {
 	return sqrt(v);
 }
 
+extern "C" __global__
+void sem_fitness_train_nls(double *set, double *sem_train, double *out_fit_train, double *out_ls_a, double *out_ls_b) {
+	__shared__ double shm[32]; // Partial fitness sum
+	int tig = blockIdx.x * blockDim.x + threadIdx.x;
+	int block_size = (NROWS_TRAIN + 32 - 1) / 32;
+
+	if (tig < 32) {
+		int start = block_size * tig;
+		int end = block_size * (tig + 1);
+		if (end > NROWS_TRAIN)
+			end = NROWS_TRAIN;
+		shm[tig] = 0;
+		for (int i = start; i < end; i++) {
+			double yy = getDataset(NUM_VARIABLE_SYMBOLS, i, set);
+			shm[tig] += ERROR_FUNC(yy, sem_train[i]);
+		}
+	}
+	__syncthreads();
+
+	if (tig == 0) {
+		for (int i = 1; i < 32; i++) {
+			shm[0] += shm[i];
+		}
+		out_fit_train[0] = POST_ERR_FUNC(shm[0] / double(NROWS_TRAIN));
+	}
+}
+
 // Runs with 32 threads
 extern "C" __global__
-void sem_fitness_train(double *set, double *sem_train, double *out_fit_train, double *out_ls_a, double *out_ls_b) {
+void sem_fitness_test_nls(double *set, double *sem_test, double *ls_a, double *ls_b, double *out_fit_test) {
+	__shared__ double shm[32]; // Warp size shared memory
+	int tig = blockIdx.x * blockDim.x + threadIdx.x;
+	int block_size = (NROWS_TEST + 32 - 1) / 32;
+
+	if (tig < 32) {
+		int start = block_size * tig;
+		int end = block_size * (tig + 1);
+		if (end > NROWS_TEST)
+			end = NROWS_TEST;
+		shm[tig] = 0;
+		for (int i = start; i < end; i++) {
+			double yy = getDataset(NUM_VARIABLE_SYMBOLS, i+NROWS_TRAIN, set);
+			shm[tig] += ERROR_FUNC(yy, sem_test[i]);
+		}
+	}
+	__syncthreads();
+
+	if (tig == 0) {
+		for (int i = 1; i < 32; i++) {
+			shm[0] += shm[i];
+		}
+		out_fit_test[1] = POST_ERR_FUNC(shm[0] / double(NROWS_TEST));
+	}
+}
+
+// Runs with 32 threads
+extern "C" __global__
+void sem_fitness_train_ls(double *set, double *sem_train, double *out_fit_train, double *out_ls_a, double *out_ls_b) {
 	// Warp size shared memory
 	__shared__ double sh_out[32]; // Sum of out semantics
 	__shared__ double sh_tar[32]; // Sum of target semantics
@@ -226,7 +281,7 @@ void sem_fitness_train(double *set, double *sem_train, double *out_fit_train, do
 
 // Runs with 32 threads
 extern "C" __global__
-void sem_fitness_test(double *set, double *sem_test, double *ls_a, double *ls_b, double *out_fit_test) {
+void sem_fitness_test_ls(double *set, double *sem_test, double *ls_a, double *ls_b, double *out_fit_test) {
 	__shared__ double shm[32]; // Warp size shared memory
 	int tig = blockIdx.x * blockDim.x + threadIdx.x;
 	int block_size = (NROWS_TEST + 32 - 1) / 32;

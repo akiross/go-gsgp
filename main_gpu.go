@@ -87,6 +87,7 @@ type Config struct {
 	of_train, of_test      *string  // Paths for output fitness files
 	of_timing              *string  // Path for file with timings
 	error_measure          *string  // Error measure to use for fitness
+	use_linear_scaling     *bool    // Enable or disable linear scaling
 }
 
 // Symbol represents a symbol of the set T (terminal symbols) or F (functional symbols).
@@ -141,6 +142,7 @@ var (
 		of_test:                flag.String("out_file_test_fitness", "fitnesstest.txt", "Path for the output file with test fitness data"),
 		of_timing:              flag.String("out_file_exec_timing", "execution_time.txt", "Path for the output file containing timings"),
 		error_measure:          flag.String("error_measure", "MSE", "Error measures to use for fitness (MSE, MAE, MRE or RMSE)"),
+		use_linear_scaling:     flag.Bool("linsc", false, "Enable linear scaling when computing fitness"),
 	}
 	cpuprofile  = flag.String("cpuprofile", "", "Write CPU profile to file")
 	memprofile  = flag.String("memprofile", "", "Write memory profile to file")
@@ -1160,8 +1162,13 @@ func main() {
 	kern_copy_split = cu_mod.GetFunction("sem_copy_split")
 	kern_eval_array = cu_mod.GetFunction("semantic_eval_arrays")
 	kern_crossover = cu_mod.GetFunction("sem_crossover")
-	kern_fit_train = cu_mod.GetFunction("sem_fitness_train")
-	kern_fit_test = cu_mod.GetFunction("sem_fitness_test")
+	if *config.use_linear_scaling {
+		kern_fit_train = cu_mod.GetFunction("sem_fitness_train_ls")
+		kern_fit_test = cu_mod.GetFunction("sem_fitness_test_ls")
+	} else {
+		kern_fit_train = cu_mod.GetFunction("sem_fitness_train_nls")
+		kern_fit_test = cu_mod.GetFunction("sem_fitness_test_nls")
+	}
 	kern_mutation = cu_mod.GetFunction("sem_mutation")
 
 	// Tracking time
