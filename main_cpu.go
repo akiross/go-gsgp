@@ -82,6 +82,7 @@ type Config struct {
 	of_timing              *string  // Path for file with timings
 	error_measure          *string  // Error measure to use for fitness
 	n_workers              *int     // Number of workers to use (goroutines)
+	use_linear_scaling     *bool    // Activate linear scaling
 }
 
 // Symbol represents a symbol of the set T (terminal symbols) or F (functional symbols).
@@ -137,6 +138,7 @@ var (
 		of_timing:              flag.String("out_file_exec_timing", "execution_time.txt", "Path for the output file containing timings"),
 		error_measure:          flag.String("error_measure", "MSE", "Error measures to use for fitness (MSE, RMSE, MAE or MRE)"),
 		n_workers:              flag.Int("workers", runtime.NumCPU(), "Number of workers (goroutines) to use"),
+		use_linear_scaling:     flag.Bool("linsc", false, "Enable linear scaling when computing fitness"),
 	}
 	cpuprofile  = flag.String("cpuprofile", "", "Write CPU profile to file")
 	memprofile  = flag.String("memprofile", "", "Write memory profile to file")
@@ -177,6 +179,10 @@ var (
 	dist_func func(cFloat64, cFloat64) cFloat64 // Distance function to use for fitness
 	// Function to call AFTER the average value has been computed (for RMSE)
 	post_error = func(d cFloat64) cFloat64 { return d }
+
+	// Functions to use for semantic computation
+	fitness_of_semantic_train func(Semantic, cInt, cInt) (cFloat64, cFloat64, cFloat64)
+	fitness_of_semantic_test  func(Semantic, cInt, cInt, cFloat64, cFloat64) cFloat64
 )
 
 // Define a sink type that works like /dev/null, but can be closed
@@ -722,6 +728,9 @@ func evaluate(p *Population) {
 		var a, b cFloat64
 		fit[i], a, b = fitness_of_semantic_train(sem_train_cases[i], cInt(nrow), 0)
 		fit_test[i] = fitness_of_semantic_test(sem_test_cases[i], cInt(nrow_test), cInt(nrow), a, b)
+		if p.individuals[i] == nil {
+			log.Println("La fitness dell'individuo", i, "è", fit[i], fit_test[i])
+		}
 	}
 }
 
@@ -857,12 +866,49 @@ func geometric_semantic_mutation(i cInt) {
 	// Mutation happens after reproduction: elite are reproduced but are not mutated
 }
 
-//var contatore_den_totali, contatore_den_nulli int
+// Without linear scaling
+func fitness_of_semantic_train_nls(sem Semantic, sem_size, sem_offs cInt) (d, a, b cFloat64) {
+	if *config.n_workers > 1 {
+		n_workers := cInt(*config.n_workers)
+		block := (sem_size + n_workers - 1) / n_workers
+
+		var wg sync.WaitGroup
+
+		par_d := make([]cFloat64, n_workers)
+		wg.Add(int(n_workers))
+		for w := cInt(0); w < n_workers; w++ {
+			go func(id, start, end cInt) {
+				// Check limit
+				if end > sem_size {
+					end = sem_size
+				}
+				// Perform evaluation
+				for i := sem_offs + start; i < sem_offs+end; i++ {
+					par_d[id] += dist_func(set[i].y_value, sem[i-sem_offs])
+				}
+				wg.Done()
+			}(w, block*w, block*(w+1))
+		}
+		wg.Wait()
+		d = par_d[0]
+		for i := cInt(1); i < n_workers; i++ {
+			d += par_d[i]
+		}
+		d = post_error(d / cFloat64(sem_size))
+	} else {
+		for i := sem_offs; i < sem_offs+sem_size; i++ {
+			d += dist_func(set[i].y_value, sem[i-sem_offs])
+		}
+		d = post_error(d / cFloat64(sem_size))
+	}
+	return d, 0, 0
+}
 
 // Given a semantic, compute the fitness of a subset of that semantic as the
 // Mean Squared Difference between the semantic and the dataset.
 // From the dataset, only sem_size elements, starting from sem_offs, will be considered in the computation
-func fitness_of_semantic_train(sem Semantic, sem_size, sem_offs cInt) (d, a, b cFloat64) {
+// With linear scaling
+func fitness_of_semantic_train_ls(sem Semantic, sem_size, sem_offs cInt) (d, a, b cFloat64) {
 	if *config.n_workers > 1 {
 		n_workers := cInt(*config.n_workers)
 		block := (sem_size + n_workers - 1) / n_workers
@@ -919,9 +965,7 @@ func fitness_of_semantic_train(sem Semantic, sem_size, sem_offs cInt) (d, a, b c
 			b = num / den
 		} else {
 			b = 0
-			//contatore_den_nulli++
 		}
-		//contatore_den_totali++
 		a = avg_tar - b*avg_out
 
 		par_d := make([]cFloat64, n_workers)
@@ -960,7 +1004,12 @@ func fitness_of_semantic_train(sem Semantic, sem_size, sem_offs cInt) (d, a, b c
 			num += (set[i].y_value - avg_tar) * odiff
 			den += odiff * odiff
 		}
-		b = num / den
+		// Avoid division by 0
+		if den != 0 {
+			b = num / den
+		} else {
+			b = 0
+		}
 		a = avg_tar - b*avg_out
 
 		for i := sem_offs; i < sem_offs+sem_size; i++ {
@@ -974,7 +1023,43 @@ func fitness_of_semantic_train(sem Semantic, sem_size, sem_offs cInt) (d, a, b c
 	return d, a, b
 }
 
-func fitness_of_semantic_test(sem Semantic, sem_size, sem_offs cInt, a, b cFloat64) cFloat64 {
+func fitness_of_semantic_test_nls(sem Semantic, sem_size, sem_offs cInt, _, _ cFloat64) cFloat64 {
+	var d cFloat64
+
+	if *config.n_workers > 1 {
+		n_workers := cInt(*config.n_workers)
+		block := (sem_size + n_workers - 1) / n_workers
+
+		var wg sync.WaitGroup
+		par_d := make([]cFloat64, n_workers)
+		wg.Add(int(n_workers))
+		for w := cInt(0); w < n_workers; w++ {
+			go func(id, start, end cInt) {
+				// Check limit
+				if end > sem_size {
+					end = sem_size
+				}
+				// Perform evaluation
+				for i := sem_offs + start; i < sem_offs+end; i++ {
+					par_d[id] += dist_func(set[i].y_value, sem[i-sem_offs])
+				}
+				wg.Done()
+			}(w, block*w, block*(w+1))
+		}
+		wg.Wait()
+		d = par_d[0]
+		for i := cInt(1); i < n_workers; i++ {
+			d += par_d[i]
+		}
+		return post_error(d / cFloat64(sem_size))
+	} else {
+		for i := sem_offs; i < sem_offs+sem_size; i++ {
+			d += dist_func(set[i].y_value, sem[i-sem_offs])
+		}
+		return post_error(d / cFloat64(sem_size))
+	}
+}
+func fitness_of_semantic_test_ls(sem Semantic, sem_size, sem_offs cInt, a, b cFloat64) cFloat64 {
 	var d cFloat64
 
 	if *config.n_workers > 1 {
@@ -1126,6 +1211,15 @@ func main() {
 		return
 	}
 
+	// Functions to compute fitness (with or without linear scaling)
+	if *config.use_linear_scaling {
+		fitness_of_semantic_train = fitness_of_semantic_train_ls
+		fitness_of_semantic_test = fitness_of_semantic_test_ls
+	} else {
+		fitness_of_semantic_train = fitness_of_semantic_train_nls
+		fitness_of_semantic_test = fitness_of_semantic_test_nls
+	}
+
 	switch strings.ToUpper(*config.error_measure) {
 	case "MAE":
 		dist_func = abs_diff
@@ -1226,7 +1320,6 @@ func main() {
 		fmt.Fprintln(executiontime, time.Since(start))
 	}
 	log.Println("Total elapsed time since start:", time.Since(start))
-	//log.Println("Contatore den nulli:", contatore_den_nulli, "su", contatore_den_totali, "fa", float64(contatore_den_nulli)/float64(contatore_den_totali))
 
 	if *memprofile != "" {
 		f, err := os.Create(*memprofile)
