@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 
+import os
+import pickle
+import shutil
 import argparse
 import subprocess
+import numpy as np
+
 
 def powerset(iterable):
     from itertools import chain, combinations
@@ -9,15 +14,46 @@ def powerset(iterable):
     s = list(iterable)
     return chain.from_iterable(combinations(s, r) for r in range(len(s)+1))
 
+
 def split(dataset, k):
     '''Returns two file names containing the k-th fold of cross-validation'''
     return 'foo{} bar{}'.format(k, k).split()
 
-def select_models():
-    pass
+
+def select_models(selected, models):
+    return models[selected] # return [models[i] for i in selected]
+
+
+def cv_average(cv_fits): 
+    fits = np.array(cv_fits) # Convert to numpy array
+    return np.mean(fits, axis=0) # Compute average across CV runs
+
+
+def old_best_cv(cv_fits):
+    '''Given a cv_fits, computes the average for the CV process,
+    then determines which models will to be used using the test
+    fitness results'''
+
+    average = cv_average(cv_fits)
+    tf = average[:,1] # Take only test fitnesses
+    nomax = tf[tf < np.percentile(tf, 75)] # Exclude large values
+    # Compute average and standard deviation
+    avg = np.mean(nomax)
+    std = np.std(nomax)
+    # Return indices of the values within 2 std
+    usable = tf < avg + 2 * std
+    return [i for i, b in enumerate(usable.data) if b]
+
 
 def best_cv(cv_fits):
-    print('Search best CV', len(cv_fits))
+    '''Given a cv_fits, computes the average for the CV process,
+    then determines which models will to be used using the test
+    fitness results. Selects the best of the combinations used'''
+
+    average = cv_average(cv_fits)
+    tf = average[:,1] # Take only test fitnesses
+    return tf.argmin()
+
 
 class Dataset:
     '''Represents a dataset to be used with k-fold cross-validation'''
@@ -77,6 +113,7 @@ class Dataset:
 
             n += 1
 
+
 class Runner:
     '''Class responsible to perform runs'''
 
@@ -112,49 +149,115 @@ class Runner:
         algo = 'go-gsgp-cpu'
         error_measure = self._err
         of_timing = f'{outdir}/timing{k}.txt'
-        of_f_train = f'{outdir}/fit_train_{k}.txt'
-        of_f_test = f'{outdir}/fit_test_{k}.txt'
+        of_train = f'{outdir}/fit_train_{k}.txt'
+        of_test = f'{outdir}/fit_test_{k}.txt'
         if_train = f'{dsdir}/train_{k}.dat'
         if_test = f'{dsdir}/test_{k}.dat'
-        log_path = f'{outdir}/log{k}.txt'
+        log_path = f'{outdir}/log{k}.'
+
+        log_mode = 'wt' # We overwrite because in the end we need only the last run (FIXME?)
 
         # Run the models to get semantics
         mod_sems = []
         for n, mod in enumerate(mods):
             mod_file = f'{outdir}/mod_{n}_{k}.dat'
-            with open(mod_file, 'w') as omod:
-                subprocess.run([mod, if_train, if_test], stdout=omod)
+            with open(mod_file, 'w') as omod, open(log_path + 'moderr', log_mode) as merr:
+                subprocess.run([mod, if_train, if_test], stdout=omod, stderr=merr)
             mod_sems.append(mod_file)
 
         run_args = [f'{bin_path}/{algo}',
             '-error_measure', error_measure,
             '-out_file_exec_timing', of_timing,
-            '-out_file_train_fitness', of_f_train,
-            '-out_file_test_fitness', of_f_test,
+            '-out_file_train_fitness', of_train,
+            '-out_file_test_fitness', of_test,
             '-train_file', if_train,
             '-test_file', if_test,
             '-max_number_generations', n_gens,
             *mod_sems,
             ]
-        print('RUNNING', f'{bin_path}/{algo}', *run_args, '2>', log_path)
-        subprocess.run([str(a) for a in run_args])
-        return [1, 2]
+        #print('RUNNING', f'{bin_path}/{algo}', *run_args, '2>', log_path)
+        with open(log_path + 'stdout', log_mode) as lout, open(log_path + 'stderr', log_mode) as lerr:
+            subprocess.run([str(a) for a in run_args], stdout=lout, stderr=lerr)
+
+        with open(of_train) as ftrain:
+            last_line = None
+            for row in ftrain:
+                last_line = row
+            train_fit = float(last_line)
+        with open(of_test) as tfit:
+            last_line = None
+            for row in tfit:
+                last_line = row
+            test_fit = float(last_line)
+        return train_fit, test_fit
+
+
+def run_sim(args, dataset, out_dir):
+    # A friendly reminder
+    print('We are going to run', args.k_fold * 2**len(models), 'times the short version and save output to', out_dir)
+
+    # Prepare for running
+    runner = Runner(algo, dataset, out_dir=out_dir, bin_dir=args.bindir)
+
+    # Where fitnesses are saved for CV
+    cv_fits = []
+
+    models2 = list(powerset(models))
+
+    if False:
+        #with open('salvato_risultati', 'rb') as fpi:
+        #    cv_fits = pickle.load(fpi)
+        pass
+    else:
+        # Perform k-fold cross validation
+        for k in range(args.k_fold):
+            ## Split the dataset and get two file names
+            #ds_train, ds_test = dataset.get_fold_path(k)
+            # Where fitnesses are saved for this fold
+            k_fits = []
+            # For every combination of models
+            for mods in models2:
+                # Run simulation gathering results
+                train_fit, test_fit = runner.run(k, mods, args.shortg)
+                # Accumulate fitnesses for this fold
+                k_fits.append((train_fit, test_fit))
+            # Accumulate fitnesses for cross validation
+            cv_fits.append(k_fits)
+
+        # Save for convenience
+        #with open('salvato_risultati', 'wb') as fpo:
+        #    pickle.dump(cv_fits, fpo)
+
+    # FIXME these messages should go on the log file :\
+    print('Average fitnesses of CV tests (models combinations on rows)')
+    print(cv_average(cv_fits))
+
+    # Compute cross validation
+    best_models = select_models(best_cv(cv_fits), models2)
+
+    # Perform long run, using only selected models
+    k_fits = []
+    for k in range(args.k_fold):
+        #ds_train, ds_test = dataset.get_fold_path(k)
+        train_fit, test_fit = runner.run(k, best_models, args.longg)
+        k_fits.append((train_fit, test_fit))
+
+    print(cv_average(k_fits))
+
 
 if __name__ == '__main__':
     # Parse arguments
     parser = argparse.ArgumentParser(description='Run tests with CV model selection')
     parser.add_argument('--k_fold', '-k', type=int, default=10, help='Number of folds')
+    parser.add_argument('--runs', '-r', type=int, default=30, help='Number of runs')
+    parser.add_argument('--config', '-C', type=str, default=None, help='Configuration file to use')
+    parser.add_argument('--bindir', '-B', type=str, default='..', help='Directory containing binaries')
+    parser.add_argument('--shortg', '-s', type=int, default=100, help='Number of generations for short runs')
+    parser.add_argument('--longg', '-l', type=int, default=1000, help='Number of generations for long runs')
     parser.add_argument('datafile', type=open, help='Dataset file to load')
+    parser.add_argument('outdir', type=str, help='Output directory')
     args = parser.parse_args()
 
-    # How many CV folds
-    k_fold = 5
-    # How many runs
-    num_runs = 15
-    # Short run
-    short_gens = 10#0
-    # Long run
-    long_gens = 100#0
     # Models we are applying
     models = ['../models/nl_lr_sem.py', '../models/nl_mlp_sem.py', '../models/nl_svr_sem.py']
     # Full dataset
@@ -162,39 +265,26 @@ if __name__ == '__main__':
     # Algorithm to use
     algo = '../go-gsgp-cpu'
 
-    # A friendly reminder
-    print('We are going to run', k_fold * 2**len(models), 'times the short version')
+    # Create root directory for all the results
+    os.mkdir(args.outdir)
+
+    # If provided, copy configuration file
+    if args.config is not None:
+        cfg = f'{args.outdir}/configuration.ini'
+        shutil.copy(args.config, cfg)
+        args.config = cfg # Replace old choice
+        print(f'This is the moment to review your configuration file in {cfg}')
+        print(f'Generation counts will be {args.shortg} (short) and {args.longg} (long)')
+        input(f'Press Enter when ready to go.')
 
     # Load the dataset and prepare the k-fold
-    dataset = Dataset(args.datafile, k_fold, out_dir='temp_dir')
+    dataset = Dataset(args.datafile, args.k_fold, out_dir=args.outdir)
 
-    # Prepare for running
-    runner = Runner(algo, dataset, out_dir='temp_dir', bin_dir='..')
-
-    # Where fitnesses are saved for CV
-    cv_fits = []
-
-    # Perform k-fold cross validation
-    for k in range(k_fold):
-        ## Split the dataset and get two file names
-        #ds_train, ds_test = dataset.get_fold_path(k)
-        # Where fitnesses are saved for this fold
-        k_fits = []
-        # For every combination of models
-        for mods in powerset(models):
-            # Run simulation gathering results
-            train_fit, test_fit = runner.run(k, mods, short_gens)
-            # Accumulate fitnesses for this fold
-            k_fits.append((train_fit, test_fit))
-        # Accumulate fitnesses for cross validation
-        cv_fits.append(k_fits)
-
-    # Compute cross validation
-    best_models = select_models(best_cv(cv_fits), powerset(models))
-
-    # Perform long run
-    for k in range(k_fold):
-        ds_train, ds_test = dataset.get_fold_path(k)
-        runner.run(k, best_models, long_gens)
-
+    for r in range(args.runs):
+        # FIXME one log per run, then use log module
+        outdir = f'{args.outdir}/{args.outdir}_{r}'
+        # Create output directory
+        os.mkdir(outdir)
+        # Run algo
+        run_sim(args, dataset, outdir)
 
