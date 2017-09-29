@@ -282,6 +282,7 @@ if __name__ == '__main__':
 
     for r in range(args.runs):
         # FIXME one log per run, then use log module
+        # FIXME this breaks when using paths like '../somedir'
         outdir = f'{args.outdir}/{args.outdir}_{r}'
         # Create output directory
         os.mkdir(outdir)
