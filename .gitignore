@@ -5,3 +5,4 @@ main_gpu
 execution_time.txt
 fitnesstest.txt
 fitnesstrain.txt
+__pycache__
