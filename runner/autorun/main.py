@@ -3,6 +3,7 @@
 """Run simulations with various options."""
 
 import os
+import json
 import time
 import pickle
 import shutil
@@ -13,6 +14,8 @@ import numpy as np
 from collections import Counter
 
 
+# Store relevant statistics in a dictionary
+# 
 global_stats = dict()
 
 
@@ -153,12 +156,13 @@ class Logger:
 class Runner:
     '''Class responsible to perform runs'''
 
-    def __init__(self, algo, dataset, out_dir, bin_dir, error_measure='RMSE'):
+    def __init__(self, algo, dataset, out_dir, bin_dir, conf_path='.', error_measure='RMSE'):
         self._algo = algo
         self._ds = dataset
         self._dir = out_dir
         self._err = error_measure
         self._bin_path = bin_dir
+        self._conf_path = conf_path
 
     def run(self, k, mods, n_gens, logger):
         '''Run the simulation for the k-th CV fold, and return '''
@@ -194,6 +198,7 @@ class Runner:
             mod_sems.append(mod_file)
 
         run_args = [os.path.join(self._bin_path, self._algo),
+            '-config', self._conf_path,
             '-error_measure', self._err,
             '-out_file_exec_timing', logger.out_file_timing(k),
             '-out_file_train_fitness', logger.out_fit_train(k),
@@ -224,9 +229,10 @@ class Runner:
 def run_sim(args, dataset, out_dir):
     # A friendly reminder
     logger_other.info(f'We are going to run {args.k_fold * 2**len(models)} times the short version and save output to {out_dir}')
+    logger_other.info(f'Using config file {args.config}')
 
     # Prepare for running
-    runner = Runner(args.algorithm, dataset, out_dir=out_dir, bin_dir=args.bindir)
+    runner = Runner(args.algorithm, dataset, out_dir=out_dir, bin_dir=args.bindir, conf_path=args.config)
 
     logger_selection = Logger(os.path.join(out_dir, 'selection'))
     logger_longrun = Logger(os.path.join(out_dir, 'longrun'))
@@ -261,6 +267,7 @@ def run_sim(args, dataset, out_dir):
             t_tot = time.perf_counter() - t_start
             logi('stats.selection.walltimes', f'Time for running selection: {t_tot}')
             global_stats['sel_time'] = global_stats.get('sel_time', 0) + t_tot
+            global_stats.setdefault('sel_times', []).append(t_tot)
 
             # Save for convenience
             #with open('salvato_risultati', 'wb') as fpo:
@@ -289,6 +296,7 @@ def run_sim(args, dataset, out_dir):
     t_tot = time.perf_counter() - t_start
     logi('stats.longrun.walltimes', f'Total time for longruns: {t_tot}')
     global_stats['lon_time'] = global_stats.get('lon_time', 0) + t_tot
+    global_stats.setdefault('lon_times', []).append(t_tot)
 
 if __name__ == '__main__':
     # Parse arguments
@@ -309,6 +317,17 @@ if __name__ == '__main__':
     # Models we are applying
     models = ['../models/nl_lr_sem.py', '../models/nl_mlp_sem.py', '../models/nl_svr_sem.py']
     models2 = list(powerset(models))
+
+    # Save model names
+    mod_names = [os.path.basename(m).split('.')[0] for m in models]
+    global_stats['models'] = mod_names
+    # Save powerset
+    global_stats['models2'] = list(powerset(mod_names))
+
+    # Number of runs to perform
+    global_stats['n_runs'] = args.runs
+    # Number of k-folds
+    global_stats['k_fold'] = args.k_fold
 
     # Create root directory for all the results
     os.mkdir(args.outdir)
@@ -340,6 +359,13 @@ if __name__ == '__main__':
         run_sim(args, dataset, outdir)
 
     logi('stats.walltimes', f'Total selection and longrun wallclock time: {global_stats["sel_time"]} {global_stats["lon_time"]}')
-    logi('stats.counters', f'')
+    # logi('stats.counters', f'')
+
+    # Convert counter to dictionary, for easier serialization
+    global_stats['best_models'] = {str(k): v for k, v in global_stats['best_models'].items()}
     logi('stats.selection.models.frequency', f'{global_stats["best_models"]}')
+
+    with open(os.path.join(args.outdir, 'stats.json'), 'wt') as statfile:
+        json.dump(global_stats, statfile)
+        #pickle.dump(statfile, global_stats)
 

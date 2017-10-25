@@ -6,3 +6,7 @@ execution_time.txt
 fitnesstest.txt
 fitnesstrain.txt
 __pycache__
+go-gsgp-*
+.vscode
+.cache
+.ipynb_checkpoints
