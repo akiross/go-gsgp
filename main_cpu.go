@@ -63,26 +63,27 @@ type Instance struct {
 
 // Config stores the parameters of a configuration.ini file
 type Config struct {
-	population_size        *int     // Number of candidate solutions
-	max_number_generations *int     // Number of generations of the GP algorithm
-	init_type              *int     // Initialization method: 0 -> grow, 1 -> full, 2 -> ramped h&h
-	p_crossover            *float64 // Crossover rate
-	p_mutation             *float64 // Mutation rate
-	max_depth_creation     *int     // Maximum depth of a newly created individual
-	tournament_size        *int     // Size of the tournament selection
-	zero_depth             *bool    // Are single-node individuals acceptable in initial population?
-	mutation_step          *float64 // Step size for the geometric semantic mutation
-	num_random_constants   *int     // Number of constants to be inserted in terminal set
-	min_random_constant    *float64 // Minimum possible value for a random constant
-	max_random_constant    *float64 // Maximum possible value for a random constant
-	minimization_problem   *bool    // True if we are minimizing, false if maximizing
-	path_in, path_test     *string  // Paths for input data files
-	rng_seed               *int64   // Seed for random numbers
-	of_train, of_test      *string  // Paths for output fitness files
-	of_timing              *string  // Path for file with timings
-	error_measure          *string  // Error measure to use for fitness
-	n_workers              *int     // Number of workers to use (goroutines)
-	use_linear_scaling     *bool    // Activate linear scaling
+	population_size           *int     // Number of candidate solutions
+	max_number_generations    *int     // Number of generations of the GP algorithm
+	init_type                 *int     // Initialization method: 0 -> grow, 1 -> full, 2 -> ramped h&h
+	p_crossover               *float64 // Crossover rate
+	p_mutation                *float64 // Mutation rate
+	max_depth_creation        *int     // Maximum depth of a newly created individual
+	tournament_size           *int     // Size of the tournament selection
+	zero_depth                *bool    // Are single-node individuals acceptable in initial population?
+	mutation_step             *float64 // Step size for the geometric semantic mutation
+	num_random_constants      *int     // Number of constants to be inserted in terminal set
+	min_random_constant       *float64 // Minimum possible value for a random constant
+	max_random_constant       *float64 // Maximum possible value for a random constant
+	minimization_problem      *bool    // True if we are minimizing, false if maximizing
+	path_in, path_test        *string  // Paths for input data files
+	rng_seed                  *int64   // Seed for random numbers
+	of_train, of_test         *string  // Paths for output fitness files
+	of_sem_train, of_sem_test *string  // Paths for output semantic files
+	of_timing                 *string  // Path for file with timings
+	error_measure             *string  // Error measure to use for fitness
+	n_workers                 *int     // Number of workers to use (goroutines)
+	use_linear_scaling        *bool    // Activate linear scaling
 }
 
 // Symbol represents a symbol of the set T (terminal symbols) or F (functional symbols).
@@ -111,6 +112,12 @@ type Population struct {
 // component is the value obtaining by applying the individual to the datum.
 type Semantic []cFloat64
 
+// Conversion to string "3.14,2.71,1.41"
+func (s Semantic) String() string {
+	v := fmt.Sprint([]cFloat64(s)) // Print regular slice to string
+	return strings.Trim(strings.Join(strings.Fields(v), ","), "[]")
+}
+
 var (
 	gitCommit string // This will be filled at link-time
 	// Create flag/configuration variables with default values (in case config file is missing)
@@ -135,6 +142,8 @@ var (
 		rng_seed:               flag.Int64("seed", time.Now().UnixNano(), "Specify a seed for the RNG (uses time by default)"),
 		of_train:               flag.String("out_file_train_fitness", "fitnesstrain.txt", "Path for the output file with train fitness data"),
 		of_test:                flag.String("out_file_test_fitness", "fitnesstest.txt", "Path for the output file with test fitness data"),
+		of_sem_train:           flag.String("out_file_train_semantic", "semantictrain.txt", "Path for the output file with train semantic data"),
+		of_sem_test:            flag.String("out_file_test_semantic", "semantictest.txt", "Path for the output file with test semantic data"),
 		of_timing:              flag.String("out_file_exec_timing", "execution_time.txt", "Path for the output file containing timings"),
 		error_measure:          flag.String("error_measure", "MSE", "Error measures to use for fitness (MSE, RMSE, MAE or MRE)"),
 		n_workers:              flag.Int("workers", runtime.NumCPU(), "Number of workers (goroutines) to use"),
@@ -304,6 +313,10 @@ func read_config_file(path string) {
 			*config.of_train = fields[1]
 		case "out_file_test_fitness":
 			*config.of_test = fields[1]
+		case "out_file_train_semantic":
+			*config.of_sem_train = fields[1]
+		case "out_file_test_semantic":
+			*config.of_sem_test = fields[1]
 		case "out_file_exec_timing":
 			*config.of_timing = fields[1]
 		case "error_measure":
@@ -1259,6 +1272,10 @@ func main() {
 	defer fitness_train.Close()
 	fitness_test := create_or_panic(*config.of_test)
 	defer fitness_test.Close()
+	semantic_train := create_or_panic(*config.of_sem_train)
+	defer semantic_train.Close()
+	semantic_test := create_or_panic(*config.of_sem_test)
+	defer semantic_test.Close()
 
 	// Seed RNG
 	log.Println("Random seed:", *config.rng_seed)
@@ -1314,8 +1331,13 @@ func main() {
 
 		index_best = best_individual()
 
+		// Write fitness of best individual
 		fmt.Fprintln(fitness_train, fit[index_best])
 		fmt.Fprintln(fitness_test, fit_test[index_best])
+
+		// Write semantic of best individual
+		fmt.Fprintln(semantic_train, sem_train_cases[index_best])
+		fmt.Fprintln(semantic_test, sem_test_cases[index_best])
 
 		fmt.Fprintln(executiontime, time.Since(start))
 	}
