@@ -3,6 +3,7 @@
 """Run simulations with various options."""
 
 import os
+import sys
 import json
 import time
 import pickle
@@ -31,24 +32,31 @@ def powerset(iterable):
     return chain.from_iterable(combinations(s, r) for r in range(len(s)+1))
 
 
-def cv_average(cv_fits): 
-    """Compute average for CV fitness results."""
-    fits = np.array(cv_fits) # Convert to numpy array
-    return np.mean(fits, axis=0) # Compute average across CV runs
+def row_average(table): 
+    """Compute average along first axis (rows)."""
+    fits = np.array(table) # Convert to numpy array
+    return np.mean(fits, axis=0) # Compute average across rows
 
 
 def best_cv(cv_fits):
-    '''Given a cv_fits, computes the average for the CV process,
+    """Given a cv_fits, computes the average for the CV process,
     `then determines which models will to be used using the test
-    fitness results. Selects the best of the combinations used'''
+    fitness results. Selects the best of the combinations used"""
 
-    average = cv_average(cv_fits)
+    average = row_average(cv_fits)
     tf = average[:,1] # Take only test fitnesses
     return tf.argmin()
 
 
+def semantic_distance(s1, s2):
+    """Return L2 distance between semantics."""
+    s1 = np.array(s1)
+    s2 = np.array(s2)
+    return sum(s1 - s2) ** 0.5
+
+
 class Dataset:
-    '''Represents a dataset to be used with k-fold cross-validation'''
+    """Represents a dataset to be used with k-fold cross-validation"""
     def __init__(self, datafile, k, randomize=True, out_dir='.'):
         self._ds_obj = datafile
         self._k = k
@@ -60,7 +68,7 @@ class Dataset:
         self._prepare_datasets(k, randomize)
 
     def get_fold_path(self, i):
-        '''Returns the name of the i-th train/test files'''
+        """Returns the name of the i-th train/test files"""
         return self._written[i]
 
     def get_out_path(self):
@@ -72,44 +80,60 @@ class Dataset:
     def get_test_path(self, k):
         return os.path.join(self._out_path, 'dataset', f'test_{k}.dat')
 
-    def _prepare_datasets(self, k, randomize):
-        '''Prepare datafiles for k-fold cross validation,
+    def _prepare_datasets(self, k, randomize, force_semantic_consistency=True):
+        """Prepare datafiles for k-fold cross validation,
         producing train_*.dat and test_*.dat files in current
-        directory'''
-
+        directory.
+        """
         from random import shuffle
 
-        # Load the data
+        # Load the data as a list of strings
         with self._ds_obj as df:
             self._ds = [l.strip().split() for l in df]
         # Number of variables in the dataset
         n_vars = len(self._ds[0]) - 1
+        dsl = len(self._ds)  # (total) dataset length
+        size, rem = divmod(dsl, k)  # Size of each fold
+        # We might want to have semantic consistency among the folds
+        # (i.e. all folds of the same size, so we can average their semantics)
+        # Check if the number of rows is exactly divisible
+        if force_semantic_consistency and rem != 0:
+            ok_sizes = [i for i in range(2, dsl // 2) if dsl % i == 0]
+            print(f'Dataset has size {dsl} which cannot divided in {k} folds')
+            print(f'Here some valid k values you can use:\n{ok_sizes}')
+            sys.exit(1) # Do not proceed: we rely on this
+
+        # size = dsl + k - 1 // k
 
         # Shuffle rows
         if randomize:
             shuffle(self._ds)
 
         # Generate files
-        dsl = len(self._ds) 
-        size = (dsl + k - 1) // k
+        self.n_train_samples = dsl - size
+        self.n_test_samples = size
 
-        # Sequence number for split
-        n = 0
+        n = 0  # Sequence number for split
+        # Iterate on starting points of each fold (0, size, 2*size, ...)
         for i in range(0, dsl, size):
+            # Ending point in the dataset
             j = min(dsl, i+size)
             # Path of files to write
             train_file, test_file = self.get_train_path(n), self.get_test_path(n)
             self._written.append((train_file, test_file))
 
             with open(train_file, 'wt') as train, open(test_file, 'wt') as test:
-                # TODO move writing to separate procedure to make testing easier
+                # TODO move writing to file in a separate procedure to make testing easier
                 # Write train dataset
+                n_rows = dsl - j + i
                 print(n_vars, file=train)
-                print(dsl - j + i, file=train)
+                print(n_rows, file=train)
                 print('\n'.join('\t'.join(r) for r in self._ds[:i] + self._ds[j:]), file=train)
+
                 # Write test dataset
+                n_rows = j - i
                 print(n_vars, file=test)
-                print(j-i, file=test)
+                print(n_rows, file=test)
                 print('\n'.join('\t'.join(r) for r in self._ds[i:j]), file=test)
 
             n += 1
@@ -129,6 +153,12 @@ class Logger:
 
     def out_fit_test(self, k):
         return os.path.join(self._dir, f'fit_test_{k}.txt')
+
+    def out_sem_train(self, k):
+        return os.path.join(self._dir, f'sem_train_{k}.txt')
+    
+    def out_sem_test(self, k):
+        return os.path.join(self._dir, f'sem_test_{k}.txt')
     
     def out_log_stdout(self, k):
         return os.path.join(self._dir, f'log{k}.stdout')
@@ -140,7 +170,7 @@ class Logger:
         return os.path.join(self._dir, f'mod_log{k}.stderr')
 
     def get_mod_file(self, n, k):
-        '''Path of the mod file for combination n and cross validation k'''
+        """Path of the mod file for combination n and cross validation k"""
         return os.path.join(self._dir, f'mod_{n}_{k}.dat')
 
     def open_log_stdout(self, k):
@@ -153,8 +183,22 @@ class Logger:
         return open(self.out_log_model_stderr(k), 'at')
 
 
+def file_last_line(path):
+    """Return the last line of a file."""
+    with open(path) as fp:
+        last_line = None
+        for row in fp:
+            last_line = row
+        return last_line
+
+
+def float_list(css: str):
+    """Return the comma-separated-list of floats as a list of floats."""
+    return [float(v) for v in css.split(',')]
+
+
 class Runner:
-    '''Class responsible to perform runs'''
+    """Class responsible to perform runs."""
 
     def __init__(self, algo, dataset, out_dir, bin_dir, conf_path='.', error_measure='RMSE'):
         self._algo = algo
@@ -165,7 +209,7 @@ class Runner:
         self._conf_path = conf_path
 
     def run(self, k, mods, n_gens, logger):
-        '''Run the simulation for the k-th CV fold, and return '''
+        """Run the simulation for the k-th CV fold, and return """
         ds_train, ds_test = self._ds.get_fold_path(k)
         print('Running simulation', k, 'with models', mods, 'on datasets', ds_train, ds_test, 'for', n_gens, 'generations')
 
@@ -177,11 +221,11 @@ class Runner:
             return self._run_direct(k, mods, n_gens, logger)
 
     def _run_with_temp_files(self, k, mods, n_gens):
-        '''Runs algorithms that write to fixed paths'''
+        """Runs algorithms that write to fixed paths"""
         raise NotImplementedError('Not implemented yet! Why are you not using the faster algos? :P')
 
     def _run_direct(self, k, mods, n_gens, logger):
-        '''Run algorithms that write to custom paths'''
+        """Run algorithms that write to custom paths"""
 
         dsdir = self._ds.get_out_path()
         if_train = self._ds.get_train_path(k)
@@ -203,6 +247,8 @@ class Runner:
             '-out_file_exec_timing', logger.out_file_timing(k),
             '-out_file_train_fitness', logger.out_fit_train(k),
             '-out_file_test_fitness', logger.out_fit_test(k),
+            '-out_file_train_semantic', logger.out_sem_train(k),
+            '-out_file_test_semantic', logger.out_sem_test(k),
             '-train_file', if_train,
             '-test_file', if_test,
             '-max_number_generations', n_gens,
@@ -213,20 +259,16 @@ class Runner:
             subprocess.run([str(a) for a in run_args], stdout=lout, stderr=lerr)
 
         # Get the last fitness value
-        with open(logger.out_fit_train(k)) as ftrain:
-            last_line = None
-            for row in ftrain:
-                last_line = row
-            train_fit = float(last_line)
-        with open(logger.out_fit_test(k)) as tfit:
-            last_line = None
-            for row in tfit:
-                last_line = row
-            test_fit = float(last_line)
-        return train_fit, test_fit
+        train_fit = float(file_last_line(logger.out_fit_train(k)))
+        test_fit = float(file_last_line(logger.out_fit_test(k)))
+        # Get the last semantic value
+        train_sem = float_list(file_last_line(logger.out_sem_train(k)))
+        test_sem = float_list(file_last_line(logger.out_sem_test(k)))
+        return train_fit, test_fit, train_sem, test_sem
 
 
 def run_sim(args, dataset, out_dir):
+    """Run simulation with a preliminary phase of model selection."""
     # A friendly reminder
     logger_other.info(f'We are going to run {args.k_fold * 2**len(models)} times the short version and save output to {out_dir}')
     logger_other.info(f'Using config file {args.config}')
@@ -237,8 +279,8 @@ def run_sim(args, dataset, out_dir):
     logger_selection = Logger(os.path.join(out_dir, 'selection'))
     logger_longrun = Logger(os.path.join(out_dir, 'longrun'))
 
-    # Where fitnesses are saved for CV
-    cv_fits = []
+    # Where fitnesses and semantics are saved for CV
+    cv_fits, cv_sems_train, cv_sems_test = [], [], []
 
     if args.all:
         best_models = models2[-1] # Use all models 
@@ -254,16 +296,21 @@ def run_sim(args, dataset, out_dir):
             for k in range(args.k_fold):
                 ## Split the dataset and get two file names
                 #ds_train, ds_test = dataset.get_fold_path(k)
-                # Where fitnesses are saved for this fold
-                k_fits = []
+                k_fits = []  # Saved fitnesses for this fold
+                k_sems_train, k_sems_test = [], []  # Saved semantics for this fold
+
                 # For every combination of models
                 for mods in models2:
                     # Run simulation gathering results
-                    train_fit, test_fit = runner.run(k, mods, args.shortg, logger_selection)
+                    train_fit, test_fit, train_sem, test_sem = runner.run(k, mods, args.shortg, logger_selection)
                     # Accumulate fitnesses for this fold
                     k_fits.append((train_fit, test_fit))
-                # Accumulate fitnesses for cross validation
+                    k_sems_train.append(train_sem)
+                    k_sems_test.append(test_sem)
+                # Accumulate fitnesses and semantics for cross validation
                 cv_fits.append(k_fits)
+                cv_sems_train.append(k_sems_train)
+                cv_sems_test.append(k_sems_test)
             t_tot = time.perf_counter() - t_start
             logi('stats.selection.walltimes', f'Time for running selection: {t_tot}')
             global_stats['sel_time'] = global_stats.get('sel_time', 0) + t_tot
@@ -273,26 +320,56 @@ def run_sim(args, dataset, out_dir):
             #with open('salvato_risultati', 'wb') as fpo:
             #    pickle.dump(cv_fits, fpo)
 
-        logi('stats.selection.cv.fitness.average', f'Average fitnesses of CV tests (models combinations on rows)\n{cv_average(cv_fits)}')
+        logi('stats.selection.cv.fitness.average', f'Average fitnesses of CV tests (models combinations on rows)\n{row_average(cv_fits)}')
 
         t_start = time.perf_counter()
         # Compute cross validation
         bm = best_cv(cv_fits)
         best_models = models2[bm]
+        # Get the semantic of the best model
+        cv_sems_train = np.array(cv_sems_train)
+        cv_sems_test = np.array(cv_sems_test)
+        print('cv_fits shape is', np.array(cv_fits).shape)
+        print('cv_sems_tra shape is', cv_sems_train.shape)
+        # print('la forma di cv_sems_tes è', cv_sems_test.shape)
+
+        # We are relying on the fact that k-folded dataset have same length
+        assert cv_sems_train.shape == (args.k_fold, len(models2), dataset.n_train_samples)
+
+        ## TESTING
+        # Does cv average works on cv_sems as well?
+        avg_sem_train = row_average(cv_sems_train)
+        avg_sem_test = row_average(cv_sems_test)
+        print('avg_sem_train shape is', avg_sem_train.shape)
+
+        # bm_sem = 
+        # individuare la semantica (media) del migliore individuo
+        # e fare la distanza tra quella e quella del migliore individuo man mano che procedo
 
         logi('stats.selection.models.best', f'{bm} {best_models}')
         global_stats['best_models'] = global_stats.get('best_models', Counter()) + Counter({bm: 1})
 
     # TODO testare l'argomento --all
 
+    # Best semantic
+    best_train_sem = avg_sem_train[bm]
+    best_test_sem = avg_sem_test[bm]
+
     # Perform long run, using only selected models
     k_fits = []
+    k_sem_dist = []
     for k in range(args.k_fold):
         #ds_train, ds_test = dataset.get_fold_path(k)
-        train_fit, test_fit = runner.run(k, best_models, args.longg, logger_longrun)
+        train_fit, test_fit, train_sem, test_sem = runner.run(k, best_models, args.longg, logger_longrun)
         k_fits.append((train_fit, test_fit))
+        # Compute distance between semantics
+        dtr = semantic_distance(train_sem, best_train_sem)
+        dte = semantic_distance(test_sem, best_test_sem)
+        k_sem_dist.append((dtr, dte))
 
-    logi('stats.longrun.cv.fitness.average', f'Average CV: {cv_average(k_fits)}')
+    # k_sem_dist unused TODO can it be actually useful? :P
+
+    logi('stats.longrun.cv.fitness.average', f'Average CV: {row_average(k_fits)}')
     t_tot = time.perf_counter() - t_start
     logi('stats.longrun.walltimes', f'Total time for longruns: {t_tot}')
     global_stats['lon_time'] = global_stats.get('lon_time', 0) + t_tot
