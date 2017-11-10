@@ -1306,8 +1306,12 @@ func main() {
 	// Evaluate each individual in the population, filling fitnesses and finding best individual
 	evaluate(p)
 	index_best = best_individual()
+	// Write fitness before start
 	fmt.Fprintln(fitness_train, fit[index_best])
 	fmt.Fprintln(fitness_test, fit_test[index_best])
+	// Write semantic before start
+	fmt.Fprintln(semantic_train, sem_train_cases[index_best])
+	fmt.Fprintln(semantic_test, sem_test_cases[index_best])
 
 	fmt.Fprintln(executiontime, time.Since(start))
 

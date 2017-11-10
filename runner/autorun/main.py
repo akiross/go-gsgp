@@ -227,13 +227,14 @@ class Runner:
     def _run_direct(self, k, mods, n_gens, logger):
         """Run algorithms that write to custom paths"""
 
-        dsdir = self._ds.get_out_path()
-        if_train = self._ds.get_train_path(k)
-        if_test = self._ds.get_test_path(k)
+        # Get paths for
+        dsdir = self._ds.get_out_path()  # Directory containing output
+        if_train = self._ds.get_train_path(k)  # Training dataset
+        if_test = self._ds.get_test_path(k)  # Testing dataset
 
         log_mode = 'wt' # We overwrite because in the end we need only the last run (FIXME?)
 
-        # Run the models to get semantics
+        # Run each machine learning algo and get its semantics
         mod_sems = []
         for n, mod in enumerate(mods):
             mod_file = logger.get_mod_file(n, k)
@@ -357,15 +358,15 @@ def run_sim(args, dataset, out_dir):
 
     # Perform long run, using only selected models
     k_fits = []
-    k_sem_dist = []
+    # k_sem_dist = []
     for k in range(args.k_fold):
         #ds_train, ds_test = dataset.get_fold_path(k)
         train_fit, test_fit, train_sem, test_sem = runner.run(k, best_models, args.longg, logger_longrun)
         k_fits.append((train_fit, test_fit))
         # Compute distance between semantics
-        dtr = semantic_distance(train_sem, best_train_sem)
-        dte = semantic_distance(test_sem, best_test_sem)
-        k_sem_dist.append((dtr, dte))
+        # dtr = semantic_distance(train_sem, best_train_sem)
+        # dte = semantic_distance(test_sem, best_test_sem)
+        # k_sem_dist.append((dtr, dte))
 
     # k_sem_dist unused TODO can it be actually useful? :P
 
@@ -415,6 +416,7 @@ if __name__ == '__main__':
     logger_other = logging.getLogger('other')
 
     # If provided, copy configuration file
+    # TODO also, read values from the config file instead of using cli arguments
     if args.config is not None:
         cfg = os.path.join(args.outdir, 'configuration.ini')
         shutil.copy(args.config, cfg)
@@ -423,8 +425,17 @@ if __name__ == '__main__':
         print(f'Generation counts will be {args.shortg} (short) and {args.longg} (long)')
         input(f'Press Enter when ready to go.')
 
+        # Save config file to stats, for reference
+        with open(cfg, 'rt') as cfgfp:
+            global_stats['configuration.ini'] = cfgfp.read()
+
     # Load the dataset and prepare the k-fold
     dataset = Dataset(args.datafile, args.k_fold, out_dir=args.outdir)
+
+    # TODO
+    # per poter fare le analisi sul tempo, bisogna avere una media delle semantiche
+    # dopo tutti i run. per non recuperare le semantiche al momento delle analisi dati
+    # conviene fare qui la media e la produzione di un file di output medio che sia facilmente usabile nelle analisi
 
     for r in range(args.runs):
         # FIXME one log per run, then use log module
