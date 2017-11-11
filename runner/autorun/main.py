@@ -415,6 +415,9 @@ if __name__ == '__main__':
     logger_stats = logging.getLogger('stats')
     logger_other = logging.getLogger('other')
 
+    # Load the dataset and prepare the k-fold
+    dataset = Dataset(args.datafile, args.k_fold, out_dir=args.outdir)
+
     # If provided, copy configuration file
     # TODO also, read values from the config file instead of using cli arguments
     if args.config is not None:
@@ -428,9 +431,6 @@ if __name__ == '__main__':
         # Save config file to stats, for reference
         with open(cfg, 'rt') as cfgfp:
             global_stats['configuration.ini'] = cfgfp.read()
-
-    # Load the dataset and prepare the k-fold
-    dataset = Dataset(args.datafile, args.k_fold, out_dir=args.outdir)
 
     # TODO
     # per poter fare le analisi sul tempo, bisogna avere una media delle semantiche
