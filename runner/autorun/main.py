@@ -384,6 +384,7 @@ if __name__ == '__main__':
     parser.add_argument('--runs', '-r', type=int, default=30, help='Number of runs')
     parser.add_argument('--config', '-C', type=str, default=None, help='Configuration file to use')
     parser.add_argument('--bindir', '-B', type=str, default='..', help='Directory containing binaries')
+    parser.add_argument('--modeldir', '-M', type=str, default='..', help='Directory containing models')
     parser.add_argument('--shortg', '-s', type=int, default=100, help='Number of generations for short runs')
     parser.add_argument('--longg', '-l', type=int, default=1000, help='Number of generations for long runs')
     parser.add_argument('--algorithm', '-A', type=str, default='go-gsgp-cpu', help='Path of algo to use')
@@ -393,7 +394,12 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # Models we are applying
-    models = ['../models/nl_lr_sem.py', '../models/nl_mlp_sem.py', '../models/nl_svr_sem.py']
+    # models = ['../models/nl_lr_sem.py', '../models/nl_mlp_sem.py', '../models/nl_svr_sem.py']
+    models = []
+    for f in os.listdir(args.modeldir):
+        fp = os.path.join(args.modeldir, f)
+        if os.path.isfile(fp):
+            models.append(fp)
     models2 = list(powerset(models))
 
     # Save model names
