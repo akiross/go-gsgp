@@ -4,6 +4,7 @@
 
 import os
 import sys
+import gzip
 import json
 import time
 import pickle
@@ -18,6 +19,13 @@ from collections import Counter
 # Store relevant statistics in a dictionary
 # 
 global_stats = dict()
+
+
+def zopen(path, mode='rt'):
+    """Open the file for reading. If gzipped, open it anyway."""
+    if path.endswith('.gz'):
+        return gzip.open(path, mode)
+    return open(path, mode)
 
 
 def logi(log, message):
@@ -53,6 +61,51 @@ def semantic_distance(s1, s2):
     s1 = np.array(s1)
     s2 = np.array(s2)
     return sum(s1 - s2) ** 0.5
+
+
+def load_semantic_file(fp):
+    """Return the semantic from the specified file-like object."""
+    sem = []
+    for l in fp:
+        sem.append(np.array([float(v) for v in l.split(',')]))
+    return sem
+
+
+def load_avg_semantic(sem_files):
+    """Given a list of paths, returns the average semantic."""
+    acc = np.array(load_semantic_file(zopen(sem_files[0])))
+    for path in sem_files[1:]:
+        with zopen(path) as fp:
+            acc += np.array(load_semantic_file(fp))
+    return acc / len(sem_files)
+
+
+def load_semantic(name, run, fold, dataset):
+    """Return the semantic from the specified fold in a longrun."""
+    sem = []
+    with open(f'{name}/{name}{run}/longrun/sem_{dataset}_{fold}.txt', 'rt') as fp:
+        return load_semantic_file(fp)
+
+
+def semantic_distance(s1, s2):
+    """Compute L2-norm between two semantics."""
+    return sum((s1 - s2) ** 2)
+
+
+def load_sem_distance(name, run, fold, dataset):
+    """Load the k-fold semantic and compute distance among first semantic and all the others, returning it."""
+    sem = load_semantic(name, run, fold, dataset)
+    return [semantic_distance(sem[0], s) for s in sem]
+
+
+def load_folded_sem_distance(name, run, n_folds, dataset):
+    """Return the k-fold average of semantic distance."""
+    # Load semantic of
+    dist = np.array(load_sem_distance(name, run, 0, dataset))
+    # Compute average distances
+    for i in range(1, n_folds):
+        dist += np.array(load_sem_distance(name, run, i, dataset))
+    return dist / n_folds
 
 
 class Dataset:
@@ -154,11 +207,17 @@ class Logger:
     def out_fit_test(self, k):
         return os.path.join(self._dir, f'fit_test_{k}.txt')
 
+    def out_avg_sem_train(self):
+        return os.path.join(self._dir, 'sem_train_avg.txt')
+
+    def out_avg_sem_test(self):
+        return os.path.join(self._dir, 'sem_test_avg.txt')
+
     def out_sem_train(self, k):
-        return os.path.join(self._dir, f'sem_train_{k}.txt')
+        return os.path.join(self._dir, f'sem_train_{k}.txt.gz')
     
     def out_sem_test(self, k):
-        return os.path.join(self._dir, f'sem_test_{k}.txt')
+        return os.path.join(self._dir, f'sem_test_{k}.txt.gz')
     
     def out_log_stdout(self, k):
         return os.path.join(self._dir, f'log{k}.stdout')
@@ -263,9 +322,9 @@ class Runner:
         train_fit = float(file_last_line(logger.out_fit_train(k)))
         test_fit = float(file_last_line(logger.out_fit_test(k)))
         # Get the last semantic value
-        train_sem = float_list(file_last_line(logger.out_sem_train(k)))
-        test_sem = float_list(file_last_line(logger.out_sem_test(k)))
-        return train_fit, test_fit, train_sem, test_sem
+        # train_sem = float_list(file_last_line(logger.out_sem_train(k)))
+        # test_sem = float_list(file_last_line(logger.out_sem_test(k)))
+        return train_fit, test_fit  # , train_sem, test_sem
 
 
 def run_sim(args, dataset, out_dir):
@@ -303,15 +362,16 @@ def run_sim(args, dataset, out_dir):
                 # For every combination of models
                 for mods in models2:
                     # Run simulation gathering results
-                    train_fit, test_fit, train_sem, test_sem = runner.run(k, mods, args.shortg, logger_selection)
+                    # train_fit, test_fit, train_sem, test_sem = runner.run(k, mods, args.shortg, logger_selection)
+                    train_fit, test_fit = runner.run(k, mods, args.shortg, logger_selection)
                     # Accumulate fitnesses for this fold
                     k_fits.append((train_fit, test_fit))
-                    k_sems_train.append(train_sem)
-                    k_sems_test.append(test_sem)
+                    # k_sems_train.append(train_sem)
+                    # k_sems_test.append(test_sem)
                 # Accumulate fitnesses and semantics for cross validation
                 cv_fits.append(k_fits)
-                cv_sems_train.append(k_sems_train)
-                cv_sems_test.append(k_sems_test)
+                # cv_sems_train.append(k_sems_train)
+                # cv_sems_test.append(k_sems_test)
             t_tot = time.perf_counter() - t_start
             logi('stats.selection.walltimes', f'Time for running selection: {t_tot}')
             global_stats['sel_time'] = global_stats.get('sel_time', 0) + t_tot
@@ -328,20 +388,20 @@ def run_sim(args, dataset, out_dir):
         bm = best_cv(cv_fits)
         best_models = models2[bm]
         # Get the semantic of the best model
-        cv_sems_train = np.array(cv_sems_train)
-        cv_sems_test = np.array(cv_sems_test)
-        print('cv_fits shape is', np.array(cv_fits).shape)
-        print('cv_sems_tra shape is', cv_sems_train.shape)
+        # cv_sems_train = np.array(cv_sems_train)
+        # cv_sems_test = np.array(cv_sems_test)
+        # print('cv_fits shape is', np.array(cv_fits).shape)
+        # print('cv_sems_tra shape is', cv_sems_train.shape)
         # print('la forma di cv_sems_tes è', cv_sems_test.shape)
 
         # We are relying on the fact that k-folded dataset have same length
-        assert cv_sems_train.shape == (args.k_fold, len(models2), dataset.n_train_samples)
+        # assert cv_sems_train.shape == (args.k_fold, len(models2), dataset.n_train_samples)
 
         ## TESTING
         # Does cv average works on cv_sems as well?
-        avg_sem_train = row_average(cv_sems_train)
-        avg_sem_test = row_average(cv_sems_test)
-        print('avg_sem_train shape is', avg_sem_train.shape)
+        # avg_sem_train = row_average(cv_sems_train)
+        # avg_sem_test = row_average(cv_sems_test)
+        # print('avg_sem_train shape is', avg_sem_train.shape)
 
         # bm_sem = 
         # individuare la semantica (media) del migliore individuo
@@ -353,22 +413,37 @@ def run_sim(args, dataset, out_dir):
     # TODO testare l'argomento --all
 
     # Best semantic
-    best_train_sem = avg_sem_train[bm]
-    best_test_sem = avg_sem_test[bm]
+    # best_train_sem = avg_sem_train[bm]
+    # best_test_sem = avg_sem_test[bm]
 
     # Perform long run, using only selected models
     k_fits = []
+    k_sem_train, k_sem_test = [], []
     # k_sem_dist = []
     for k in range(args.k_fold):
         #ds_train, ds_test = dataset.get_fold_path(k)
-        train_fit, test_fit, train_sem, test_sem = runner.run(k, best_models, args.longg, logger_longrun)
+        # train_fit, test_fit, train_sem, test_sem = runner.run(k, best_models, args.longg, logger_longrun)
+        train_fit, test_fit = runner.run(k, best_models, args.longg, logger_longrun)
         k_fits.append((train_fit, test_fit))
         # Compute distance between semantics
         # dtr = semantic_distance(train_sem, best_train_sem)
         # dte = semantic_distance(test_sem, best_test_sem)
         # k_sem_dist.append((dtr, dte))
 
-    # k_sem_dist unused TODO can it be actually useful? :P
+        # Save files containing semantics
+        k_sem_train.append(logger_longrun.out_sem_train(k))
+        k_sem_test.append(logger_longrun.out_sem_test(k))
+
+    # Open the semantic files and compute average
+    avg_sem_train = load_avg_semantic(k_sem_train)
+    avg_sem_test = load_avg_semantic(k_sem_test)
+    np.savetxt(logger_longrun.out_avg_sem_train(), avg_sem_train)
+    np.savetxt(logger_longrun.out_avg_sem_test(), avg_sem_test)
+
+    # Remove semantic files if necessary
+    if not args.keep:
+        for sem_fp in k_sem_train + k_sem_test
+            os.remove(sem_fp)
 
     logi('stats.longrun.cv.fitness.average', f'Average CV: {row_average(k_fits)}')
     t_tot = time.perf_counter() - t_start
@@ -376,10 +451,14 @@ def run_sim(args, dataset, out_dir):
     global_stats['lon_time'] = global_stats.get('lon_time', 0) + t_tot
     global_stats.setdefault('lon_times', []).append(t_tot)
 
+    # Compute average semantic for the cross-validation set
+    print('Average of k-folded semantics!', k_sem_train, k_sem_test)
+
 if __name__ == '__main__':
     # Parse arguments
     parser = argparse.ArgumentParser(description='Run tests with CV model selection')
     parser.add_argument('--all', type=bool, default=False, help='Use all models without selection')
+    parser.add_argument('--keep', type=bool, default=False, help='Keep semantic files after computing averages')
     parser.add_argument('--k_fold', '-k', type=int, default=10, help='Number of folds')
     parser.add_argument('--runs', '-r', type=int, default=30, help='Number of runs')
     parser.add_argument('--config', '-C', type=str, default=None, help='Configuration file to use')
@@ -400,14 +479,22 @@ if __name__ == '__main__':
         fp = os.path.join(args.modeldir, f)
         if os.path.isfile(fp):
             models.append(fp)
+
+    if len(models) > 6:
+        print('There are more than 6 models: the process could be very slow.')
+        print(models[:3])
+        if input('Are you sure you want to continue? (y to go on) ') != 'y':
+            sys.exit(0)
+
     models2 = list(powerset(models))
 
+    # Save arguments
+    global_stats['args'] = {k: v for k, v in vars(args).items() if type(v) in [int, float, bool]}
     # Save model names
     mod_names = [os.path.basename(m).split('.')[0] for m in models]
     global_stats['models'] = mod_names
     # Save powerset
     global_stats['models2'] = list(powerset(mod_names))
-
     # Number of runs to perform
     global_stats['n_runs'] = args.runs
     # Number of k-folds
@@ -451,6 +538,7 @@ if __name__ == '__main__':
         os.mkdir(outdir)
         # Run algo
         run_sim(args, dataset, outdir)
+        # Compute average semantic
 
     logi('stats.walltimes', f'Total selection and longrun wallclock time: {global_stats["sel_time"]} {global_stats["lon_time"]}')
     # logi('stats.counters', f'')
@@ -463,3 +551,4 @@ if __name__ == '__main__':
         json.dump(global_stats, statfile)
         #pickle.dump(statfile, global_stats)
 
+    # Average semantics

@@ -23,6 +23,7 @@ package main
 
 import (
 	"bufio"
+	"compress/gzip"
 	"flag"
 	"fmt"
 	"io"
@@ -142,8 +143,8 @@ var (
 		rng_seed:               flag.Int64("seed", time.Now().UnixNano(), "Specify a seed for the RNG (uses time by default)"),
 		of_train:               flag.String("out_file_train_fitness", "fitnesstrain.txt", "Path for the output file with train fitness data"),
 		of_test:                flag.String("out_file_test_fitness", "fitnesstest.txt", "Path for the output file with test fitness data"),
-		of_sem_train:           flag.String("out_file_train_semantic", "semantictrain.txt", "Path for the output file with train semantic data"),
-		of_sem_test:            flag.String("out_file_test_semantic", "semantictest.txt", "Path for the output file with test semantic data"),
+		of_sem_train:           flag.String("out_file_train_semantic", "semantictrain.txt.gz", "Path for the output file with train semantic data"),
+		of_sem_test:            flag.String("out_file_test_semantic", "semantictest.txt.gz", "Path for the output file with test semantic data"),
 		of_timing:              flag.String("out_file_exec_timing", "execution_time.txt", "Path for the output file containing timings"),
 		error_measure:          flag.String("error_measure", "MSE", "Error measures to use for fitness (MSE, RMSE, MAE or MRE)"),
 		n_workers:              flag.Int("workers", runtime.NumCPU(), "Number of workers (goroutines) to use"),
@@ -1164,6 +1165,10 @@ func create_or_panic(path string) io.WriteCloser {
 	f, err := os.Create(path)
 	if err != nil {
 		panic(err)
+	}
+	// If a .gz file was requested, wrap it with a gzip writer
+	if strings.HasSuffix(path, ".gz") {
+		return gzip.NewWriter(f)
 	}
 	return f
 }
