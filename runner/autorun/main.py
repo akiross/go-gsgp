@@ -344,7 +344,9 @@ def run_sim(args, dataset, out_dir):
 
     if args.all:
         best_models = models2[-1] # Use all models 
+        global_stats['best_models'] = global_stats.get('best_models', Counter()) + Counter({0: 1})
         global_stats['sel_time'] = global_stats.get('sel_time', 0)
+        t_start = time.perf_counter()
     else:
         if False:
             #with open('salvato_risultati', 'rb') as fpi:
@@ -442,7 +444,7 @@ def run_sim(args, dataset, out_dir):
 
     # Remove semantic files if necessary
     if not args.keep:
-        for sem_fp in k_sem_train + k_sem_test
+        for sem_fp in k_sem_train + k_sem_test:
             os.remove(sem_fp)
 
     logi('stats.longrun.cv.fitness.average', f'Average CV: {row_average(k_fits)}')
