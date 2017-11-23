@@ -446,6 +446,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run tests with CV model selection')
     parser.add_argument('--all', type=bool, default=False, help='Use all models without selection')
     parser.add_argument('--none', type=bool, default=False, help='Use no models without selection')
+    parser.add_argument('--noask', type=bool, default=False, help='Do not ask for config checking')
     parser.add_argument('--keep', type=bool, default=False, help='Keep semantic files after computing averages')
     parser.add_argument('--k_fold', '-k', type=int, default=10, help='Number of folds')
     parser.add_argument('--runs', '-r', type=int, default=30, help='Number of runs')
@@ -505,9 +506,10 @@ if __name__ == '__main__':
         cfg = os.path.join(args.outdir, 'configuration.ini')
         shutil.copy(args.config, cfg)
         args.config = cfg # Replace old choice
-        print(f'This is the time to review your configuration file in {cfg}')
-        print(f'Generation counts will be {args.shortg} (short) and {args.longg} (long)')
-        input(f'Press Enter when ready to go.')
+        if not args.noask:
+            print(f'This is the time to review your configuration file in {cfg}')
+            print(f'Generation counts will be {args.shortg} (short) and {args.longg} (long)')
+            input(f'Press Enter when ready to go.')
 
         # Save config file to stats, for reference
         with open(cfg, 'rt') as cfgfp:
