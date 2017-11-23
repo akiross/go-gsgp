@@ -344,57 +344,39 @@ def run_sim(args, dataset, out_dir):
 
     if args.all:
         best_models = models2[-1] # Use all models 
+        global_stats['best_models'] = global_stats.get('best_models', Counter()) + Counter({-1: 1})
+        global_stats['sel_time'] = global_stats.get('sel_time', 0)
+    elif args.none:
+        best_models = models2[0] # Use no models 
         global_stats['best_models'] = global_stats.get('best_models', Counter()) + Counter({0: 1})
         global_stats['sel_time'] = global_stats.get('sel_time', 0)
-        t_start = time.perf_counter()
     else:
-        if False:
-            #with open('salvato_risultati', 'rb') as fpi:
-            #    cv_fits = pickle.load(fpi)
-            pass
-        else:
-            t_start = time.perf_counter()
-            # Perform k-fold cross validation
-            for k in range(args.k_fold):
-                ## Split the dataset and get two file names
-                #ds_train, ds_test = dataset.get_fold_path(k)
-                k_fits = []  # Saved fitnesses for this fold
-                k_sems_train, k_sems_test = [], []  # Saved semantics for this fold
+        t_start = time.perf_counter()
+        # Perform k-fold cross validation
+        for k in range(args.k_fold):
+            ## Split the dataset and get two file names
+            #ds_train, ds_test = dataset.get_fold_path(k)
+            k_fits = []  # Saved fitnesses for this fold
+            k_sems_train, k_sems_test = [], []  # Saved semantics for this fold
 
-                # For every combination of models
-                for mods in models2:
-                    # Run simulation gathering results
-                    # train_fit, test_fit, train_sem, test_sem = runner.run(k, mods, args.shortg, logger_selection)
-                    train_fit, test_fit = runner.run(k, mods, args.shortg, logger_selection)
-                    # Accumulate fitnesses for this fold
-                    k_fits.append((train_fit, test_fit))
-                    # k_sems_train.append(train_sem)
-                    # k_sems_test.append(test_sem)
-                # Accumulate fitnesses and semantics for cross validation
-                cv_fits.append(k_fits)
-                # cv_sems_train.append(k_sems_train)
-                # cv_sems_test.append(k_sems_test)
-            t_tot = time.perf_counter() - t_start
-            logi('stats.selection.walltimes', f'Time for running selection: {t_tot}')
-            global_stats['sel_time'] = global_stats.get('sel_time', 0) + t_tot
-            global_stats.setdefault('sel_times', []).append(t_tot)
-
-            # Save for convenience
-            #with open('salvato_risultati', 'wb') as fpo:
-            #    pickle.dump(cv_fits, fpo)
+            # For every combination of models
+            for mods in models2:
+                # Run simulation gathering results
+                train_fit, test_fit = runner.run(k, mods, args.shortg, logger_selection)
+                # Accumulate fitnesses for this fold
+                k_fits.append((train_fit, test_fit))
+            # Accumulate fitnesses and semantics for cross validation
+            cv_fits.append(k_fits)
+        t_tot = time.perf_counter() - t_start
+        logi('stats.selection.walltimes', f'Time for running selection: {t_tot}')
+        global_stats['sel_time'] = global_stats.get('sel_time', 0) + t_tot
+        global_stats.setdefault('sel_times', []).append(t_tot)
 
         logi('stats.selection.cv.fitness.average', f'Average fitnesses of CV tests (models combinations on rows)\n{row_average(cv_fits)}')
 
-        t_start = time.perf_counter()
         # Compute cross validation
         bm = best_cv(cv_fits)
         best_models = models2[bm]
-        # Get the semantic of the best model
-        # cv_sems_train = np.array(cv_sems_train)
-        # cv_sems_test = np.array(cv_sems_test)
-        # print('cv_fits shape is', np.array(cv_fits).shape)
-        # print('cv_sems_tra shape is', cv_sems_train.shape)
-        # print('la forma di cv_sems_tes è', cv_sems_test.shape)
 
         # We are relying on the fact that k-folded dataset have same length
         # assert cv_sems_train.shape == (args.k_fold, len(models2), dataset.n_train_samples)
@@ -417,6 +399,9 @@ def run_sim(args, dataset, out_dir):
     # Best semantic
     # best_train_sem = avg_sem_train[bm]
     # best_test_sem = avg_sem_test[bm]
+
+    # Start timer for long run
+    t_start = time.perf_counter()
 
     # Perform long run, using only selected models
     k_fits = []
@@ -460,6 +445,7 @@ if __name__ == '__main__':
     # Parse arguments
     parser = argparse.ArgumentParser(description='Run tests with CV model selection')
     parser.add_argument('--all', type=bool, default=False, help='Use all models without selection')
+    parser.add_argument('--none', type=bool, default=False, help='Use no models without selection')
     parser.add_argument('--keep', type=bool, default=False, help='Keep semantic files after computing averages')
     parser.add_argument('--k_fold', '-k', type=int, default=10, help='Number of folds')
     parser.add_argument('--runs', '-r', type=int, default=30, help='Number of runs')
