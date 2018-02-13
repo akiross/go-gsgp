@@ -68,7 +68,8 @@ type Instance struct {
 
 // Config stores the parameters of a configuration.ini file
 type Config struct {
-	fare questo best_of                   *int     // Number of individuals to generate
+	best_of                   *int     // Number of individuals to generate TODO generate this number of individuals, then fills the population using the best of the generated ones
+	test_crossover            *bool    // True will use crossover, false will use mutation
 	population_size           *int     // Number of candidate solutions
 	init_type                 *int     // Initialization method: 0 -> grow, 1 -> full, 2 -> ramped h&h
 	max_depth_creation        *int     // Maximum depth of a newly created individual
@@ -141,6 +142,7 @@ var (
 	// Config is initially filled with default values, before init() is executed
 	config = Config{
 		best_of:              flag.Int("best_of", -1, "Solutions to generate to initialize random population"),
+		test_crossover:       flag.Bool("test_crossover", true, "Operator to test: crossover or mutation"),
 		population_size:      flag.Int("population_size", 10, "Number of candidate solutions"),
 		init_type:            flag.Int("init_type", 2, "Initialization method: 0 -> grow, 1 -> full, 2 -> ramped h&h"),
 		max_depth_creation:   flag.Int("max_depth_creation", 6, "Maximum depth of a newly created individual"),
@@ -778,40 +780,20 @@ func semantic_evaluate_array(tree []cInt, sem_size, sem_offs cInt) Semantic {
 	return val
 }
 
+// Select individuals randomly with uniform distribution
 func random_selection() cInt {
 	return cInt(rand.Intn(*config.population_size))
-}
-
-// Implements a tournament selection procedure
-func tournament_selection() cInt {
-	// Select first participant
-	best_index := rand.Intn(*config.population_size)
-	for i := 1; i < *config.tournament_size; i++ {
-		next := rand.Intn(*config.population_size)
-		if better(fit[next], fit[best_index]) {
-			best_index = next
-		}
-	}
-	return cInt(best_index)
 }
 
 // Copies an individual of the population at generation g-1 to the current population (generation g)
 // Any individual (any position) can be selected to be copied in position i
 func reproduction(i cInt) {
-	old_i := i
-
-	// Elitism: if i is the best individual, reproduce it
-	// if i != index_best {
-	//	// If it's not the best, select one at random to reproduce
-	//	i = tournament_selection()
-	// }
-
 	// Copy fitness and semantics of the selected individual
-	copy(sem_train_cases_new[old_i], sem_train_cases[i])
-	copy(sem_test_cases_new[old_i], sem_test_cases[i])
+	copy(sem_train_cases_new[i], sem_train_cases[i])
+	copy(sem_test_cases_new[i], sem_test_cases[i])
 
-	fit_new[old_i] = fit[i]
-	fit_test_new[old_i] = fit_test[i]
+	fit_new[i] = fit[i]
+	fit_test_new[i] = fit_test[i]
 }
 
 // Performs a geometric semantic crossover
@@ -854,7 +836,7 @@ func geometric_semantic_crossover(i cInt) {
 func geometric_semantic_mutation(i cInt) {
 	if i != index_best {
 		mut_step := cFloat64(rand.Float64())
-		// Create two random trees and copy it to unified memory
+		// Create two random trees and copy it
 		rt1 := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
 		rt2 := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
 
@@ -1153,6 +1135,10 @@ func init_tables() {
 	fit_test = make([]cFloat64, *config.population_size)
 	fit_new = make([]cFloat64, *config.population_size)
 	fit_test_new = make([]cFloat64, *config.population_size)
+	// TODO anziché usare solo una new, fare due buffer
+	// uno per i risultati della mutazione e una per il crossover
+	// e calcolare tutte le fitness assieme in un solo passaggio
+	// così sappiamo che gli individui di partenza sono gli stessi
 
 	ind_type = make([]byte, *config.population_size)
 
@@ -1230,10 +1216,6 @@ func main() {
 	defer fitness_train.Close()
 	fitness_test := create_or_panic(*config.of_test)
 	defer fitness_test.Close()
-	// semantic_train := create_or_panic(*config.of_sem_train)
-	// defer semantic_train.Close()
-	// semantic_test := create_or_panic(*config.of_sem_test)
-	// defer semantic_test.Close()
 
 	// Seed RNG
 	log.Println("Random seed:", *config.rng_seed)
@@ -1261,18 +1243,15 @@ func main() {
 	// Evaluate each individual in the population, filling fitnesses and finding best individual
 	evaluate(p)
 
-	var operator_to_use = 0
-
 	// Perform a single step
-	for k := 0; k < *config.population_size; k++ {
-		switch operator_to_use {
-		case 0:
+	if *config.test_crossover {
+		for k := 0; k < *config.population_size; k++ {
 			geometric_semantic_crossover(cInt(k))
-		case 1:
+		}
+	} else {
+		for k := 0; k < *config.population_size; k++ {
 			reproduction(cInt(k))
 			geometric_semantic_mutation(cInt(k))
-		default:
-			reproduction(cInt(k))
 		}
 	}
 
