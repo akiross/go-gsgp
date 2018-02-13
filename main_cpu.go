@@ -26,6 +26,8 @@ import (
 	"compress/gzip"
 	"flag"
 	"fmt"
+	"github.com/akiross/go-gsgp/pb"
+	"github.com/golang/protobuf/proto"
 	"io"
 	"io/ioutil"
 	"log"
@@ -40,8 +42,8 @@ import (
 	"time"
 )
 
-type cInt int
-type cFloat64 float64
+type cInt = int32
+type cFloat64 = float64
 
 func exp64(v cFloat64) cFloat64 {
 	r := math.Exp(float64(v))
@@ -85,6 +87,7 @@ type Config struct {
 	error_measure             *string  // Error measure to use for fitness
 	n_workers                 *int     // Number of workers to use (goroutines)
 	use_linear_scaling        *bool    // Activate linear scaling
+	proto_dump                *string  // Output file with evolutionary data
 }
 
 // Symbol represents a symbol of the set T (terminal symbols) or F (functional symbols).
@@ -149,6 +152,7 @@ var (
 		error_measure:          flag.String("error_measure", "MSE", "Error measures to use for fitness (MSE, RMSE, MAE or MRE)"),
 		n_workers:              flag.Int("workers", runtime.NumCPU(), "Number of workers (goroutines) to use"),
 		use_linear_scaling:     flag.Bool("linsc", false, "Enable linear scaling when computing fitness"),
+		proto_dump:             flag.String("proto_dump", "", "Protobuf dump file with evolutionary data"),
 	}
 	cpuprofile  = flag.String("cpuprofile", "", "Write CPU profile to file")
 	memprofile  = flag.String("memprofile", "", "Write memory profile to file")
@@ -180,6 +184,16 @@ var (
 	sem_train_cases_new []Semantic // Semantics of the population, computed on training set, at current generation g+1
 	sem_test_cases      []Semantic // Semantics of the population, computed on test set, at generation g
 	sem_test_cases_new  []Semantic // Semantics of the population, computed on test set, at current generation g+1
+
+	// Last random trees used (used in proto dump)
+	rt1 []cInt
+	rt2 []cInt
+
+	// Semantic of the last random trees used (used in proto dump)
+	sem_rt1_train Semantic
+	sem_rt1_test  Semantic
+	sem_rt2_train Semantic
+	sem_rt2_test  Semantic
 
 	index_best cInt // Index of the best individual (where? sem_*?)
 
@@ -815,25 +829,25 @@ func reproduction(i cInt) {
 func geometric_semantic_crossover(i cInt) {
 	if i != index_best {
 		// Create random tree
-		rt := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
+		rt1 = create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
 		// Replace the individual with the crossover of two parents
 		p1 := tournament_selection()
 		p2 := tournament_selection()
 
 		var ls_a, ls_b cFloat64
 		// Generate a random tree and compute its semantic (train and test)
-		sem_rt := semantic_evaluate_array(rt, cInt(nrow), 0)
-		sem_rt_test := semantic_evaluate_array(rt, cInt(nrow_test), cInt(nrow))
+		sem_rt1_train = semantic_evaluate_array(rt1, cInt(nrow), 0)
+		sem_rt1_test = semantic_evaluate_array(rt1, cInt(nrow_test), cInt(nrow))
 
 		// Compute the geometric semantic (train)
 		for j := 0; j < nrow; j++ {
-			sigmoid := 1 / (1 + exp64(-sem_rt[j]))
+			sigmoid := 1 / (1 + exp64(-sem_rt1_train[j]))
 			sem_train_cases_new[i][j] = sem_train_cases[p1][j]*sigmoid + sem_train_cases[p2][j]*(1-sigmoid)
 		}
 		fit_new[i], ls_a, ls_b = fitness_of_semantic_train(sem_train_cases_new[i], cInt(nrow), 0)
 		// Compute the geometric semantic (test)
 		for j := 0; j < nrow_test; j++ {
-			sigmoid := 1 / (1 + exp64(-sem_rt_test[j]))
+			sigmoid := 1 / (1 + exp64(-sem_rt1_test[j]))
 			sem_test_cases_new[i][j] = sem_test_cases[p1][j]*sigmoid + sem_test_cases[p2][j]*(1-sigmoid)
 		}
 		fit_test_new[i] = fitness_of_semantic_test(sem_test_cases_new[i], cInt(nrow_test), cInt(nrow), ls_a, ls_b)
@@ -852,20 +866,20 @@ func geometric_semantic_mutation(i cInt) {
 	if i != index_best {
 		mut_step := cFloat64(rand.Float64())
 		// Create two random trees and copy it to unified memory
-		rt1 := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
-		rt2 := create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
+		rt1 = create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
+		rt2 = create_grow_tree_arrays(0, cInt(*config.max_depth_creation), 0)
 
 		var ls_a, ls_b cFloat64
 		// Replace the individual with a mutated version
-		sem_rt1 := semantic_evaluate_array(rt1, cInt(nrow), 0)
-		sem_rt1_test := semantic_evaluate_array(rt1, cInt(nrow_test), cInt(nrow))
+		sem_rt1_train = semantic_evaluate_array(rt1, cInt(nrow), 0)
+		sem_rt1_test = semantic_evaluate_array(rt1, cInt(nrow_test), cInt(nrow))
 
-		sem_rt2 := semantic_evaluate_array(rt2, cInt(nrow), 0)
-		sem_rt2_test := semantic_evaluate_array(rt2, cInt(nrow_test), cInt(nrow))
+		sem_rt2_train = semantic_evaluate_array(rt2, cInt(nrow), 0)
+		sem_rt2_test = semantic_evaluate_array(rt2, cInt(nrow_test), cInt(nrow))
 
 		for j := 0; j < nrow; j++ {
-			sigmoid1 := 1 / (1 + exp64(-sem_rt1[j]))
-			sigmoid2 := 1 / (1 + exp64(-sem_rt2[j]))
+			sigmoid1 := 1 / (1 + exp64(-sem_rt1_train[j]))
+			sigmoid2 := 1 / (1 + exp64(-sem_rt2_train[j]))
 			sem_train_cases_new[i][j] += mut_step * (sigmoid1 - sigmoid2)
 		}
 		fit_new[i], ls_a, ls_b = fitness_of_semantic_train(sem_train_cases_new[i], cInt(nrow), 0)
@@ -1320,20 +1334,77 @@ func main() {
 
 	fmt.Fprintln(executiontime, time.Since(start))
 
+	// Dump data for in-depth analysis
+	var pb_evo *pb.Evolution
+	var pb_pop *pb.Population
+	if *config.proto_dump != "" {
+		pb_evo = new(pb.Evolution)
+		pb_pop = new(pb.Population)
+		pb_pop.Generation = 0
+		// Save first generation
+		for k := 0; k < *config.population_size; k++ {
+			ind := &pb.Individual{
+				pb.Individual_INIT,
+				fit[k],
+				fit_test[k],
+				sem_train_cases[k],
+				sem_test_cases[k],
+				nil,
+				// k == index_best, // Is this the best yet?
+			}
+			pb_pop.Individuals = append(pb_pop.Individuals, ind)
+		}
+		pb_evo.Generations = append(pb_evo.Generations, pb_pop)
+	}
+
 	// main GP cycle
 	for num_gen := 0; num_gen < *config.max_number_generations; num_gen++ {
+		if *config.proto_dump != "" {
+			// Create new generation and fill it with data
+			pb_pop = new(pb.Population)
+			pb_pop.Generation = int32(num_gen + 1)
+		}
 		log.Println("Generation", num_gen+1)
 		for k := 0; k < *config.population_size; k++ {
+			var operator_used pb.Individual_Operator // Operator used last
+			var random_trees []*pb.RandomTree        // Random trees used
+
 			rand_num := rand.Float64()
 			switch {
 			case rand_num < *config.p_crossover:
+				operator_used = pb.Individual_XO
 				geometric_semantic_crossover(cInt(k))
+				random_trees = []*pb.RandomTree{
+					{rt1, sem_rt1_train, sem_rt1_test},
+				}
 			case rand_num < *config.p_crossover+*config.p_mutation:
+				operator_used = pb.Individual_MUT
 				reproduction(cInt(k))
 				geometric_semantic_mutation(cInt(k))
+				random_trees = []*pb.RandomTree{
+					{rt1, sem_rt1_train, sem_rt1_test},
+					{rt2, sem_rt2_train, sem_rt2_test},
+				}
 			default:
+				operator_used = pb.Individual_REPR
 				reproduction(cInt(k))
 			}
+			// If required, save this individual
+			if *config.proto_dump != "" {
+				ind := &pb.Individual{
+					operator_used,          // What operator was used
+					fit_new[k],             // Save its train fitness
+					fit_test_new[k],        // Save its test fitness
+					sem_train_cases_new[k], // Save its train semantic
+					sem_test_cases_new[k],  // Save its test semantic
+					random_trees,           // Random trees used in the operator
+				}
+				pb_pop.Individuals = append(pb_pop.Individuals, ind)
+			}
+		}
+
+		if *config.proto_dump != "" {
+			pb_evo.Generations = append(pb_evo.Generations, pb_pop)
 		}
 
 		update_tables()
@@ -1351,6 +1422,17 @@ func main() {
 		fmt.Fprintln(executiontime, time.Since(start))
 	}
 	log.Println("Total elapsed time since start:", time.Since(start))
+
+	// Dump data
+	if *config.proto_dump != "" {
+		wire, err := proto.Marshal(pb_evo)
+		if err != nil {
+			panic("Could not marshal protobuf")
+		}
+		if err := ioutil.WriteFile(*config.proto_dump, wire, 0644); err != nil {
+			panic("Could not write to file " + *config.proto_dump)
+		}
+	}
 
 	if *memprofile != "" {
 		f, err := os.Create(*memprofile)

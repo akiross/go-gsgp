@@ -1,0 +1,47 @@
+syntax = "proto3"; // Version of protobuf language to use
+package pb; // Same package as go code
+
+message Node {
+	enum Symbol {
+		ADD = 0;
+		SUB = 1;
+		MUL = 2;
+		DIV = 3;
+		CONST = 4;
+		VAR = 5;
+	}
+	Symbol symbol = 1;
+	Node parent = 2;
+	repeated Node children = 3;
+}
+
+message RandomTree {
+	repeated int32 data = 1;
+	repeated double semantic_train = 2;
+	repeated double semantic_test = 3;
+}
+
+message Individual {
+	enum Operator {
+		INIT = 0;
+		XO = 1;
+		MUT = 2;
+		REPR = 3;
+	}
+	Operator op = 1;
+	double fitness_train = 2;
+	double fitness_test = 3;
+	repeated double semantic_train = 4;
+	repeated double semantic_test = 5;
+	repeated RandomTree rt = 6;
+}
+
+message Population {
+	int32 generation = 1;
+	repeated Individual individuals = 2;
+}
+
+message Evolution {
+	// Evolutionary process consists in a set of generations
+	repeated Population generations = 1;
+}
