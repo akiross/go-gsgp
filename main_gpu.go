@@ -153,7 +153,7 @@ var (
 	NUM_CONSTANT_SYMBOLS   cInt // Number of terminal symbols for constants
 
 	// Terminal and functional symbols
-	// This slice is filled only by create_T_F() and add_symbol() (which is used by read_sem() on initialization)
+	// This slice is filled only by create_T_F()
 	// len(symbols) == NUM_FUNCTIONAL_SYMBOLS+NUM_VARIABLE_SYMBOLS+NUM_CONSTANT_SYMBOLS
 	// In this slice, first you find NUM_FUNCTIONAL_SYMBOLS symbols, then
 	// NUM_VARIABLE_SYMBOLS symbols, finally NUM_CONSTANT_SYMBOLS symbols
@@ -656,20 +656,6 @@ func tree_to_array(root *Node) []cInt {
 	return rec_build(root, 0)
 }
 
-// Convert string with numeric constant into a symbol and add it to list
-func add_symbol(name string) *Symbol {
-	val, err := strconv.ParseFloat(name, 64)
-	if err != nil {
-		return nil // Not a float, must be a wrong variable or functional
-	}
-	// Conversion was successful, must be a constant
-	sym := &Symbol{false, -1, NUM_CONSTANT_SYMBOLS, name, cFloat64(val)}
-	symbols = append(symbols, sym)
-	// Increase symbol count
-	NUM_CONSTANT_SYMBOLS++
-	return sym
-}
-
 // Reads the file and returns their semantic
 func read_sem(path string) Semantic {
 	file, err := os.Open(path)
@@ -695,48 +681,6 @@ func read_sem(path string) Semantic {
 		panic("Not enough values when reading semantic file")
 	}
 	return sem
-}
-
-// Implements a protected division. If the denominator is equal to 0 the function returns 1 as a result of the division;
-func protected_division(num, den cFloat64) cFloat64 {
-	if den == 0 {
-		return 1
-	}
-	return num / den
-}
-
-// This function retrieves the value of a terminal symbol given
-// the i-th instance as input.
-func terminal_value(i cInt, sym *Symbol) cFloat64 {
-	if sym.id >= NUM_FUNCTIONAL_SYMBOLS && sym.id < NUM_FUNCTIONAL_SYMBOLS+NUM_VARIABLE_SYMBOLS {
-		// Variables take their value from the input data
-		return set[i].vars[sym.id-NUM_FUNCTIONAL_SYMBOLS]
-	} else {
-		// The value of a constant can be used directly
-		return sym.value
-	}
-}
-
-func eval_arrays(tree []cInt, start cInt, i cInt) cFloat64 {
-	switch {
-	case symbols[tree[start]].name == "+":
-		return eval_arrays(tree, tree[start+1], i) + eval_arrays(tree, tree[start+2], i)
-	case symbols[tree[start]].name == "-":
-		return eval_arrays(tree, tree[start+1], i) - eval_arrays(tree, tree[start+2], i)
-	case symbols[tree[start]].name == "*":
-		return eval_arrays(tree, tree[start+1], i) * eval_arrays(tree, tree[start+2], i)
-	case symbols[tree[start]].name == "/":
-		return protected_division(eval_arrays(tree, tree[start+1], i), eval_arrays(tree, tree[start+2], i))
-	case symbols[tree[start]].name == "sqrt":
-		v := eval_arrays(tree, tree[start+1], i)
-		if v < 0 {
-			return cFloat64(math.Sqrt(float64(-v)))
-		} else {
-			return cFloat64(math.Sqrt(float64(v)))
-		}
-	default:
-		return terminal_value(i, symbols[tree[start]]) // Root points to a terminal
-	}
 }
 
 // Calculates the fitness of all the individuals and determines the best individual in the population
@@ -921,17 +865,6 @@ func better(f1, f2 cFloat64) bool {
 	} else {
 		return f1 > f2
 	}
-}
-
-// Calculates the number of nodes of a solution.
-func node_count(el *Node) cInt {
-	var counter cInt = 1
-	if el.children != nil {
-		for i := cInt(0); i < el.root.arity; i++ {
-			counter += node_count(el.children[i])
-		}
-	}
-	return counter
 }
 
 // Create file or panic if an error occurs
