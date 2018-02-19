@@ -6,6 +6,7 @@ import argparse
 import numpy as np
 import pandas as pd
 from cycler import cycler
+from itertools import count
 from matplotlib import pyplot as plt
 
 # plt.style.use('ggplot')
@@ -107,21 +108,17 @@ def parse_duration(s):
     return float(s) * 0.001  # Try matching a pure number of mulliseconds
 
 
-def load_test(path, cv_runs=30):
-    """Load CV data of a single run.
-
-    Given path of a single run, load the data files
-    in it and returns the average values after CV.
-
-    Returns average fitness for training and testing,
-    and average running times.
-    """
+def load_cv_data(path):
+    """Load CV data of a single run."""
     fit_train = []
     fit_test = []
     timing = []
 
-    for p in range(cv_runs):
+    for p in count(0):
         ftp = os.path.join(path, f'fit_train_{p}.txt')
+        # Break if there is no file
+        if not os.path.isfile(ftp):
+            break
         ft = pd.read_table(ftp, names=['fit'], header=None)
         fit_train.append(ft.values.flatten())
 
@@ -144,25 +141,27 @@ def load_test(path, cv_runs=30):
     return fit_train, fit_test, timing
 
 
-def load_block_results(prefix, block, count, cv_splits=30):
-    """Loads the data from the specified directory.
-
-    Prefix is a directory containing the simulation prefix. Inside directory
-        /some/path/prefix
-    there will be directories named prefix0, prefix1, ... prefixN.
-    Each of these, will contain a "block" directory with the CV runs.
-    This function loads the CV runs in those blocks, for all the N runs.
-    """
+def load_runs(prefix_path, sub_name):
+    """Load runs data."""
+    # Get simulation name
+    prefix = os.path.basename(prefix_path)
+    # Lists for data
     cpu_train, cpu_test, cpu_timing = [], [], []
-
-    name = os.path.basename(prefix)
-    for i in range(count):
-        block_path = os.path.join(prefix, f'{name}{i}', block)
-        train, test, timing = load_test(block_path, cv_splits)
+    # Iterate till there are runs
+    for r in count(0):
+        # Path of the sub
+        run_path = os.path.join(prefix_path, f'{prefix}{r}', sub_name)
+        print('Loading runs path', run_path)
+        if not os.path.isdir(run_path):
+            print('Not found, aborting at run', r)
+            break
+        # Load data
+        train, test, timing = load_cv_data(run_path)
         cpu_train.append(train)
         cpu_test.append(test)
         cpu_timing.append(timing)
 
+    print("Averaging", len(cpu_train), "results")
     cpu_train = np.array(cpu_train)
     cpu_test = np.array(cpu_test)
     cpu_timing = np.array(cpu_timing)
@@ -183,19 +182,12 @@ def load_block_results(prefix, block, count, cv_splits=30):
     }
 
 
-def load_all_results(prefix, count, cv_splits=30):
-    """Loads all the blocks data from the specified directory.
+def load_nested_runs(prefix_path, sub_name, inner_sub_name):
+    """Load nested runs data.
 
-    Prefix is a directory containing the simulation prefix. Inside directory
-        /some/path/prefix
-    there will be directories named prefix0, prefix1, ... prefixN.
-    Each of these, will contain a directory selection and a directory
-    longrun with the CV runs.
+    some_path/prefix/prefixN/sub_name/sub_nameM/inner_sub_name
     """
-
-    selection_data = load_block_results(prefix, 'selection', count, cv_splits)
-    longrun_data = load_block_results(prefix, 'longrun', count, cv_splits)
-    return selection_data, longrun_data
+    pass
 
 
 def uses_selection(stats, name):
@@ -223,51 +215,51 @@ def load_avg_sem_distance_data(name, n_runs, dataset):
                      for i in range(n_runs)])
 
 
-def load_avg_sem_distance_avg(name, n_runs, dataset):
-    """Computes average semantic distance for specified dataset."""
-    tot = load_sem_distance_avg(name, 0, dataset)
-    for i in range(1, n_runs):
-        tot += load_sem_distance_avg(name, i, dataset)
-    return tot / n_runs
+# def load_avg_sem_distance_avg(name, n_runs, dataset):
+#     """Computes average semantic distance for specified dataset."""
+#     tot = load_sem_distance_avg(name, 0, dataset)
+#     for i in range(1, n_runs):
+#         tot += load_sem_distance_avg(name, i, dataset)
+#     return tot / n_runs
 
 
-def semantic_distance(s1, s2):
-    """Compute L2-norm between two semantics."""
-    return sum((s1 - s2) ** 2)
+# def semantic_distance(s1, s2):
+#     """Compute L2-norm between two semantics."""
+#     return sum((s1 - s2) ** 2)
 
 
-def load_semantic(name, run, fold, dataset):
-    """Return the semantic from the specified fold in a longrun."""
-    sem = []
-    path = f'{name}/{name}{run}/longrun/sem_{dataset}_{fold}.txt'
-    with open(path, 'rt') as fp:
-        for l in fp:
-            sem.append(np.array([float(v) for v in l.split(',')]))
-    return sem
+# def load_semantic(name, run, fold, dataset):
+#     """Return the semantic from the specified fold in a longrun."""
+#     sem = []
+#     path = f'{name}/{name}{run}/longrun/sem_{dataset}_{fold}.txt'
+#     with open(path, 'rt') as fp:
+#         for l in fp:
+#             sem.append(np.array([float(v) for v in l.split(',')]))
+#     return sem
 
 
-def load_sem_distance(name, run, fold, dataset):
-    """Load the k-fold semantic and compute distance among
-    first semantic and all the others, returning it."""
-    sem = load_semantic(name, run, fold, dataset)
-    return [semantic_distance(sem[0], s) for s in sem]
+# def load_sem_distance(name, run, fold, dataset):
+#     """Load the k-fold semantic and compute distance among
+#     first semantic and all the others, returning it."""
+#     sem = load_semantic(name, run, fold, dataset)
+#     return [semantic_distance(sem[0], s) for s in sem]
 
 
-def load_folded_sem_distance(name, run, n_folds, dataset):
-    """Return the k-fold average of semantic distance."""
-    # Load semantic of
-    dist = np.array(load_sem_distance(name, run, 0, dataset))
-    # Compute average distances
-    for i in range(1, n_folds):
-        dist += np.array(load_sem_distance(name, run, i, dataset))
-    return dist / n_folds
+# def load_folded_sem_distance(name, run, n_folds, dataset):
+#     """Return the k-fold average of semantic distance."""
+#     # Load semantic of
+#     dist = np.array(load_sem_distance(name, run, 0, dataset))
+#     # Compute average distances
+#     for i in range(1, n_folds):
+#         dist += np.array(load_sem_distance(name, run, i, dataset))
+#     return dist / n_folds
 
 
-def load_avg_sem_distance(name, n_runs, n_folds, dataset):
-    """Return the total average of semantic distance."""
-    dist = sum(load_folded_sem_distance(name, r, n_folds, dataset)
-               for r in range(n_runs))
-    return dist / n_runs
+# def load_avg_sem_distance(name, n_runs, n_folds, dataset):
+#     """Return the total average of semantic distance."""
+#     dist = sum(load_folded_sem_distance(name, r, n_folds, dataset)
+#                for r in range(n_runs))
+#     return dist / n_runs
 
 
 def save_img(path):
@@ -285,6 +277,7 @@ def parse_arguments():
             help='name-directory pair to load')
     parser.add_argument('-m', '--median', action='store_true',
             help='Use median instead of mean to average data')
+    parser.add_argument('prefix', help='Prefix for output files')
     return parser.parse_args()
 
 
@@ -294,6 +287,7 @@ def main():
 
     args = parse_arguments()
     better_names, out_dirs = zip(*args.dir)
+    prefix = args.prefix
     #print('Using prefix', pod)
     # Where data files are stored, these must be CLEAN directory names in PWD
     # e.g. foo/ -> invalid, ..foo -> invalid, ./foo/ -> invalid, foo -> valid
@@ -302,11 +296,8 @@ def main():
     #    print('Using directories', pod)
     #    out_dirs = pod
 
-    # TODO selezionare tramite parametro se dobbiamo produrre plot media+std o mediana+std
     use_mean = not args.median
 
-    # Decent names for plot labels
-    better_names = ['None', 'Sel', 'All']
     # Decent names for files (I used lower, but can be changed)
     better_names_files = [n.lower() for n in better_names]
 
@@ -330,7 +321,7 @@ def main():
     all_data = {}
     for name in out_dirs:
         pfile = f'{name}_all_data.pkl'
-        if os.path.exists(pfile):
+        if False and os.path.exists(pfile):  # FIXME
             print('Found existing file', pfile, 'loading it')
             # Load previously saved data
             with open(pfile, 'rb') as fp:
@@ -339,12 +330,24 @@ def main():
             print('Pickled file', pfile, 'not found, creating')
             runs = stats[name]['args']['runs']
             k_folds = stats[name]['args']['k_folds']
+            print('Ottenuto dalle stats il numero di runs', runs, 'e il k_folds', k_folds)
             all_data[name] = {}
-            all_data[name]['longrun'] = load_block_results(
-                    name, 'longrun', runs, k_folds)
+            all_data[name]['longrun'] = load_runs(name, 'longrun')
+            # Ensure we loaded data for the specified number of runs
+            assert all_data[name]['longrun']['raw_train'].shape[0] == runs
             if uses_selection(stats, name):
-                all_data[name]['selection'] = load_block_results(
-                        name, 'selection', runs, k_folds)
+                # some_path/prefix/prefixN/sub_name/sub_nameM/inner_sub_name
+                sel_data = []
+                for r in range(runs):
+                    # Get base path of r-th run
+                    run_path = os.path.join(name, f'{name}{r}', 'selection')
+                    # lollete_sel/lollete_sel0/selection/selection0/shortrun
+                    data = load_runs(run_path, 'shortrun')
+                    sel_data.append(data)
+                    # In every run, we perform k-fold CV, and for each fold
+                    # we perform a nested run with j-fold CV
+                    assert data['raw_train'].shape[0] == k_folds
+                all_data[name]['selection'] = sel_data
             # Save data to file for convenience
             with open(pfile, 'wb') as fp:
                 pickle.dump(all_data[name], fp)

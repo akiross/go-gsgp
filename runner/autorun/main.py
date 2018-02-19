@@ -689,8 +689,8 @@ def main():
 
         # Model selection
         if args.all:
-            best_models = models2[-1] # Use all models 
-            bm = len(models2)
+            best_models = models2[-1]  # Use all models 
+            bm = len(models2) - 1  # Last combination
             # global_stats['best_models'] = global_stats.get('best_models', Counter()) + Counter({len(models2): 1})
             global_stats['sel_time'] = global_stats.get('sel_time', 0)
         elif args.none:
@@ -762,14 +762,21 @@ def main():
                           args.config)
 
         # Run simulation
-        forrest.run(args.longg)
+        k_fits, k_timing, avg_sem_train, avg_sem_test = forrest.run(args.longg)
 
-    # logi('stats.walltimes', f'Total selection and longrun wallclock time: {global_stats["sel_time"]} {global_stats["lon_time"]}')
+        # Write semantic data
+        forrest.save_files(avg_sem_train, avg_sem_test)
 
-    # Convert counter to dictionary, for easier serialization
-    # stateller('best_models',
-    #          {str(k): v for k, v in global_stats['best_models'].items()},
-    #          '')
+        if not args.keep:
+            # There is no need to keep the semantic files here
+            forrest.clean_sem_files()
+
+        # Save logs and stats
+        logi('stats.longrun.cv.fitness.average', f'Average CV: {row_average(k_fits)}')
+        t_tot = sum(k_timing)  # Total time for executing K-fold CV
+        logi('stats.longrun.walltimes', f'Total time for longruns: {t_tot}')
+        global_stats['lon_time'] = global_stats.get('lon_time', 0) + t_tot
+        global_stats.setdefault('lon_times', []).append(t_tot)
 
     logi('stats.selection.models.frequency', f'{global_stats["best_models"]}')
 
