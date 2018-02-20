@@ -2,9 +2,6 @@
 
 """Run simulations with various options."""
 
-sistemare il tempo di esecuzione per la selezione
-dai plot c'é un gap tremendo, probabilmente 
-
 import os
 import sys
 import gzip
