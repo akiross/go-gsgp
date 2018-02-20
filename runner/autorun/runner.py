@@ -119,7 +119,13 @@ class Dataset:
         # Number of variables in the dataset
         n_vars = len(self._ds[0]) - 1
         dsl = len(self._ds)  # (total) dataset length
+        if k > dsl:
+            print(f'Dataset has size {dsl}, k cannot be larger than {dsl//2}.')
+            print('Aborting')
+            sys.exit(1)
+
         size, rem = divmod(dsl, k)  # Size of each fold
+
         # We might want to have semantic consistency among the folds
         # (i.e. all folds of the same size, so we can average their semantics)
         # Check if the number of rows is exactly divisible
@@ -127,6 +133,7 @@ class Dataset:
             ok_sizes = [i for i in range(2, dsl // 2) if dsl % i == 0]
             print(f'Dataset has size {dsl} which cannot divided in {k} folds')
             print(f'Here some valid k values you can use:\n{ok_sizes}')
+            print('Aborting')
             sys.exit(1) # Do not proceed: we rely on this
 
         # Shuffle rows
