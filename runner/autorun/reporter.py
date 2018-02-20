@@ -141,7 +141,7 @@ def load_cv_data(path):
     return fit_train, fit_test, timing
 
 
-def load_runs(prefix_path, sub_name):
+def load_runs(prefix_path, sub_name, sub_prefix='{prefix}{r}'):
     """Load runs data."""
     # Get simulation name
     prefix = os.path.basename(prefix_path)
@@ -149,8 +149,9 @@ def load_runs(prefix_path, sub_name):
     cpu_train, cpu_test, cpu_timing = [], [], []
     # Iterate till there are runs
     for r in count(0):
+        sp = sub_prefix.format(prefix=prefix, r=r)  # e.g. selection3
         # Path of the sub
-        run_path = os.path.join(prefix_path, f'{prefix}{r}', sub_name)
+        run_path = os.path.join(prefix_path, sp, sub_name)
         print('Loading runs path', run_path)
         if not os.path.isdir(run_path):
             print('Not found, aborting at run', r)
@@ -336,18 +337,26 @@ def main():
             # Ensure we loaded data for the specified number of runs
             assert all_data[name]['longrun']['raw_train'].shape[0] == runs
             if uses_selection(stats, name):
-                # some_path/prefix/prefixN/sub_name/sub_nameM/inner_sub_name
+                # some_path/prefix/prefixR/selection/selectionM/selectionM_K/inner_sub_name
                 sel_data = []
-                for r in range(runs):
-                    # Get base path of r-th run
-                    run_path = os.path.join(name, f'{name}{r}', 'selection')
-                    # lollete_sel/lollete_sel0/selection/selection0/shortrun
-                    data = load_runs(run_path, 'shortrun')
-                    sel_data.append(data)
-                    # In every run, we perform k-fold CV, and for each fold
-                    # we perform a nested run with j-fold CV
-                    assert data['raw_train'].shape[0] == k_folds
+                for m, mods in enumerate(stats[name]['models2']):
+                    # For each model, load all run data
+                    mod_data = []
+                    for r in range(runs):
+                        # Get base path of r-th run
+                        run_path = os.path.join(name, f'{name}{r}', 'selection')
+                        # lollete_sel/lollete_sel0/selection/selection0/shortrun
+                        run_path = os.path.join(name, f'{name}{r}', 'selection', f'selection{m}')
+                        # lollete_sel/lollete_sel0/selection/selection3/selection3_1/inner_sub_name
+                        # Using '{prefix}_{r}' to produce selectionM/selectionM_K
+                        data = load_runs(run_path, 'shortrun', '{prefix}_{r}')
+                        mod_data.append(data)
+                        # In every run, we perform k-fold CV, and for each fold
+                        # we perform a nested run with j-fold CV
+                        assert data['raw_train'].shape[0] == k_folds
+                    sel_data.append(mod_data)
                 all_data[name]['selection'] = sel_data
+                print('Selection data', sel_data)
             # Save data to file for convenience
             with open(pfile, 'wb') as fp:
                 pickle.dump(all_data[name], fp)
@@ -428,7 +437,7 @@ def main():
     names = []
     for name in all_data:
         names.append(bn[name])
-        seltime = stats[name]['sel_time'] / stats[name]['n_runs']
+        seltime = stats[name]['sel_time'] / (stats[name]['n_runs'] * len(stats[name]['models2']))
         lontime = stats[name]['lon_time'] / stats[name]['n_runs']
         fitdata = indices(all_data[name]['longrun']['raw_train'])
         runtime = np.linspace(seltime, seltime+lontime, len(fitdata[0]))
@@ -452,7 +461,7 @@ def main():
     names = []
     for name in all_data:
         names.append(bn[name])
-        seltime = stats[name]['sel_time'] / stats[name]['n_runs']
+        seltime = stats[name]['sel_time'] / (stats[name]['n_runs'] * len(stats[name]['models2']))
         lontime = stats[name]['lon_time'] / stats[name]['n_runs']
         fitdata = indices(all_data[name]['longrun']['raw_test'])
         runtime = np.linspace(seltime, seltime+lontime, len(fitdata[0]))

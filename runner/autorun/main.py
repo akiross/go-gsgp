@@ -2,6 +2,9 @@
 
 """Run simulations with various options."""
 
+sistemare il tempo di esecuzione per la selezione
+dai plot c'é un gap tremendo, probabilmente 
+
 import os
 import sys
 import gzip
@@ -57,13 +60,13 @@ def row_average(table):
     return np.mean(fits, axis=0) # Compute average across rows
 
 
-def best_cv(cv_fits):
-    """Given a cv_fits, computes the average for the CV process,
-    `then determines which models will to be used using the test
-    fitness results. Selects the best of the combinations used"""
-    average = row_average(cv_fits)
-    tf = average[:,1] # Take only test fitnesses
-    return tf.argmin()
+# def best_cv(cv_fits):
+#     """Given a cv_fits, computes the average for the CV process,
+#     `then determines which models will to be used using the test
+#     fitness results. Selects the best of the combinations used"""
+#     average = row_average(cv_fits)
+#     tf = average[:,1] # Take only test fitnesses
+#     return tf.argmin()
 
 
 def load_semantic_file(fp):
@@ -390,120 +393,121 @@ class Forrest:
         print('Average of k-folded semantics!', self._k_sem_train, self._k_sem_test)
 
 
-def run_sim(args, dataset, out_dir):
-    """Run simulation with a preliminary phase of model selection."""
-    # A friendly reminder
-    logger_other.info(f'We are going to run {args.k_folds * 2**len(models)} times the short version and save output to {out_dir}')
-    logger_other.info(f'Using config file {args.config}')
-
-    # Prepare for running
-    runner = Runner(args.algorithm, dataset, out_dir=out_dir, bin_dir=args.bindir, conf_path=args.config)
-
-    logger_selection = Logger(os.path.join(out_dir, 'selection'))
-    logger_longrun = Logger(os.path.join(out_dir, 'longrun'))
-
-    # Where fitnesses and semantics are saved for CV
-    cv_fits, cv_sems_train, cv_sems_test = [], [], []
-
-    if args.all:
-        best_models = models2[-1] # Use all models 
-        global_stats['best_models'] = global_stats.get('best_models', Counter()) + Counter({-1: 1})
-        global_stats['sel_time'] = global_stats.get('sel_time', 0)
-    elif args.none:
-        best_models = models2[0] # Use no models 
-        global_stats['best_models'] = global_stats.get('best_models', Counter()) + Counter({0: 1})
-        global_stats['sel_time'] = global_stats.get('sel_time', 0)
-    else:
-        t_start = time.perf_counter()
-        # Perform k-fold cross validation
-        for k in range(args.k_folds):
-            ## Split the dataset and get two file names
-            #ds_train, ds_test = dataset.get_fold_path(k)
-            k_fits = []  # Saved fitnesses for this fold
-            k_sems_train, k_sems_test = [], []  # Saved semantics for this fold
-
-            # For every combination of models
-            for mods in models2:
-                # Run simulation gathering results
-                train_fit, test_fit = runner.run(k, mods, args.shortg, logger_selection)
-                # Accumulate fitnesses for this fold
-                k_fits.append((train_fit, test_fit))
-            # Accumulate fitnesses and semantics for cross validation
-            cv_fits.append(k_fits)
-        t_tot = time.perf_counter() - t_start
-        logi('stats.selection.walltimes', f'Time for running selection: {t_tot}')
-        global_stats['sel_time'] = global_stats.get('sel_time', 0) + t_tot
-        global_stats.setdefault('sel_times', []).append(t_tot)
-
-        logi('stats.selection.cv.fitness.average', f'Average fitnesses of CV tests (models combinations on rows)\n{row_average(cv_fits)}')
-
-        # Compute cross validation
-        bm = best_cv(cv_fits)
-        best_models = models2[bm]
-
-        # We are relying on the fact that k-folded dataset have same length
-        # assert cv_sems_train.shape == (args.k_folds, len(models2), dataset.n_train_samples)
-
-        ## TESTING
-        # Does cv average works on cv_sems as well?
-        # avg_sem_train = row_average(cv_sems_train)
-        # avg_sem_test = row_average(cv_sems_test)
-        # print('avg_sem_train shape is', avg_sem_train.shape)
-
-        # bm_sem = 
-        # individuare la semantica (media) del migliore individuo
-        # e fare la distanza tra quella e quella del migliore individuo man mano che procedo
-
-        logi('stats.selection.models.best', f'{bm} {best_models}')
-        global_stats['best_models'] = global_stats.get('best_models', Counter()) + Counter({bm: 1})
-
-    # TODO testare l'argomento --all
-
-    # Best semantic
-    # best_train_sem = avg_sem_train[bm]
-    # best_test_sem = avg_sem_test[bm]
-
-    # Start timer for long run
-    t_start = time.perf_counter()
-
-    # Perform long run, using only selected models
-    k_fits = []
-    k_sem_train, k_sem_test = [], []
-    # k_sem_dist = []
-    for k in range(args.k_folds):
-        #ds_train, ds_test = dataset.get_fold_path(k)
-        # train_fit, test_fit, train_sem, test_sem = runner.run(k, best_models, args.longg, logger_longrun)
-        train_fit, test_fit = runner.run(k, best_models, args.longg, logger_longrun)
-        k_fits.append((train_fit, test_fit))
-        # Compute distance between semantics
-        # dtr = semantic_distance(train_sem, best_train_sem)
-        # dte = semantic_distance(test_sem, best_test_sem)
-        # k_sem_dist.append((dtr, dte))
-
-        # Save files containing semantics
-        k_sem_train.append(logger_longrun.out_sem_train(k))
-        k_sem_test.append(logger_longrun.out_sem_test(k))
-
-    # Open the semantic files and compute average
-    avg_sem_train = load_avg_semantic(k_sem_train)
-    avg_sem_test = load_avg_semantic(k_sem_test)
-    np.savetxt(logger_longrun.out_avg_sem_train(), avg_sem_train)
-    np.savetxt(logger_longrun.out_avg_sem_test(), avg_sem_test)
-
-    # Remove semantic files if necessary
-    if not args.keep:
-        for sem_fp in k_sem_train + k_sem_test:
-            os.remove(sem_fp)
-
-    logi('stats.longrun.cv.fitness.average', f'Average CV: {row_average(k_fits)}')
-    t_tot = time.perf_counter() - t_start
-    logi('stats.longrun.walltimes', f'Total time for longruns: {t_tot}')
-    global_stats['lon_time'] = global_stats.get('lon_time', 0) + t_tot
-    global_stats.setdefault('lon_times', []).append(t_tot)
-
-    # Compute average semantic for the cross-validation set
-    print('Average of k-folded semantics!', k_sem_train, k_sem_test)
-
+# def run_sim(args, dataset, out_dir):
+#     """Run simulation with a preliminary phase of model selection."""
+#     # A friendly reminder
+#     logger_other.info(f'We are going to run {args.k_folds * 2**len(models)} times the short version and save output to {out_dir}')
+#     logger_other.info(f'Using config file {args.config}')
+# 
+#     # Prepare for running
+#     runner = Runner(args.algorithm, dataset, out_dir=out_dir, bin_dir=args.bindir, conf_path=args.config)
+# 
+#     logger_selection = Logger(os.path.join(out_dir, 'selection'))
+#     logger_longrun = Logger(os.path.join(out_dir, 'longrun'))
+# 
+#     # Where fitnesses and semantics are saved for CV
+#     cv_fits, cv_sems_train, cv_sems_test = [], [], []
+# 
+#     if args.all:
+#         best_models = models2[-1] # Use all models 
+#         global_stats['best_models'] = global_stats.get('best_models', Counter()) + Counter({-1: 1})
+#         global_stats['sel_time'] = global_stats.get('sel_time', 0)
+#     elif args.none:
+#         best_models = models2[0] # Use no models 
+#         global_stats['best_models'] = global_stats.get('best_models', Counter()) + Counter({0: 1})
+#         global_stats['sel_time'] = global_stats.get('sel_time', 0)
+#     else:
+#         t_start = time.perf_counter()
+#         # Perform k-fold cross validation
+#         for k in range(args.k_folds):
+#             ## Split the dataset and get two file names
+#             #ds_train, ds_test = dataset.get_fold_path(k)
+#             k_fits = []  # Saved fitnesses for this fold
+#             k_sems_train, k_sems_test = [], []  # Saved semantics for this fold
+# 
+#             # For every combination of models
+#             for mods in models2:
+#                 # Run simulation gathering results
+#                 train_fit, test_fit = runner.run(k, mods, args.shortg, logger_selection)
+#                 # Accumulate fitnesses for this fold
+#                 k_fits.append((train_fit, test_fit))
+#             # Accumulate fitnesses and semantics for cross validation
+#             cv_fits.append(k_fits)
+# 
+#         t_tot = time.perf_counter() - t_start
+#         logi('stats.selection.walltimes', f'Time for running selection: {t_tot}')
+#         global_stats['sel_time'] = global_stats.get('sel_time', 0) + t_tot
+#         global_stats.setdefault('sel_times', []).append(t_tot)
+# 
+#         logi('stats.selection.cv.fitness.average', f'Average fitnesses of CV tests (models combinations on rows)\n{row_average(cv_fits)}')
+# 
+#         # Compute cross validation
+#         bm = best_cv(cv_fits)
+#         best_models = models2[bm]
+# 
+#         # We are relying on the fact that k-folded dataset have same length
+#         # assert cv_sems_train.shape == (args.k_folds, len(models2), dataset.n_train_samples)
+# 
+#         ## TESTING
+#         # Does cv average works on cv_sems as well?
+#         # avg_sem_train = row_average(cv_sems_train)
+#         # avg_sem_test = row_average(cv_sems_test)
+#         # print('avg_sem_train shape is', avg_sem_train.shape)
+# 
+#         # bm_sem = 
+#         # individuare la semantica (media) del migliore individuo
+#         # e fare la distanza tra quella e quella del migliore individuo man mano che procedo
+# 
+#         logi('stats.selection.models.best', f'{bm} {best_models}')
+#         global_stats['best_models'] = global_stats.get('best_models', Counter()) + Counter({bm: 1})
+# 
+#     # TODO testare l'argomento --all
+# 
+#     # Best semantic
+#     # best_train_sem = avg_sem_train[bm]
+#     # best_test_sem = avg_sem_test[bm]
+# 
+#     # Start timer for long run
+#     t_start = time.perf_counter()
+# 
+#     # Perform long run, using only selected models
+#     k_fits = []
+#     k_sem_train, k_sem_test = [], []
+#     # k_sem_dist = []
+#     for k in range(args.k_folds):
+#         #ds_train, ds_test = dataset.get_fold_path(k)
+#         # train_fit, test_fit, train_sem, test_sem = runner.run(k, best_models, args.longg, logger_longrun)
+#         train_fit, test_fit = runner.run(k, best_models, args.longg, logger_longrun)
+#         k_fits.append((train_fit, test_fit))
+#         # Compute distance between semantics
+#         # dtr = semantic_distance(train_sem, best_train_sem)
+#         # dte = semantic_distance(test_sem, best_test_sem)
+#         # k_sem_dist.append((dtr, dte))
+# 
+#         # Save files containing semantics
+#         k_sem_train.append(logger_longrun.out_sem_train(k))
+#         k_sem_test.append(logger_longrun.out_sem_test(k))
+# 
+#     # Open the semantic files and compute average
+#     avg_sem_train = load_avg_semantic(k_sem_train)
+#     avg_sem_test = load_avg_semantic(k_sem_test)
+#     np.savetxt(logger_longrun.out_avg_sem_train(), avg_sem_train)
+#     np.savetxt(logger_longrun.out_avg_sem_test(), avg_sem_test)
+# 
+#     # Remove semantic files if necessary
+#     if not args.keep:
+#         for sem_fp in k_sem_train + k_sem_test:
+#             os.remove(sem_fp)
+# 
+#     logi('stats.longrun.cv.fitness.average', f'Average CV: {row_average(k_fits)}')
+#     t_tot = time.perf_counter() - t_start
+#     logi('stats.longrun.walltimes', f'Total time for longruns: {t_tot}')
+#     global_stats['lon_time'] = global_stats.get('lon_time', 0) + t_tot
+#     global_stats.setdefault('lon_times', []).append(t_tot)
+# 
+#     # Compute average semantic for the cross-validation set
+#     print('Average of k-folded semantics!', k_sem_train, k_sem_test)
+# 
 
 def load_models(modeldir):
     '''Load models from a directory and return them along with the powerset'''
@@ -701,40 +705,54 @@ def main():
         else:
             t_start = time.perf_counter()
             # Create somepath/sim/sim{r}/selection
-            sel_dir = os.path.join(outdir, 'selection')
-            mkdir(sel_dir)
+            mkdir(os.path.join(outdir, 'selection'))
             # Nested cross validation fitness
             ncv_fits = []
-            # We need to perform J-folded cross-validation for every K-fold
-            for k in range(args.k_folds):
-                print('-' * 30, 'Starting nested run', k, 'of', r, '-' * 30)
-                # Prepare directory for this nested cross validation
-                # somepath/sim/sim{r}/selection/selection{k}
-                nestdir = os.path.join(outdir, 'selection', f'selection{k}')
-                mkdir(nestdir)
-                # Build a dataset from the k-th fold train file
-                nested_dataset = Dataset(dataset.get_train_path(k),
-                                         args.j_folds, nestdir,
-                                         skip_header=2)
-                # Prepare run, using 
-                forrest = Forrest(f'shortrun',
-                                  args.algorithm,
-                                  models,
-                                  nested_dataset,
-                                  args.j_folds,  # Use a different fold number
-                                  nestdir,
-                                  args.bindir,
-                                  args.config)
+            # For every combination of models
+            for m, mods in enumerate(models2):
+                print(' .' * 30, 'Testing models', mods, ' .' * 30)
+                # We need to perform J-folded cross-validation for every K-fold
+                seldir = os.path.join(outdir, 'selection', f'selection{m}')
+                mkdir(seldir)
+                avg_j_fits = []
+                for k in range(args.k_folds):
+                    print('-' * 30, 'Starting nested run', k, 'of', r, '-' * 30)
+                    # Prepare directory for this nested cross validation
+                    # somepath/sim/sim{r}/selection/selection{k}
+                    nestdir = os.path.join(seldir, f'selection{m}_{k}')
+                    mkdir(nestdir)
+                    # Build a dataset from the k-th fold train file
+                    nested_dataset = Dataset(dataset.get_train_path(k),
+                                             args.j_folds, nestdir,
+                                             skip_header=2)
+                    # Prepare run, using 
+                    forrest = Forrest(f'shortrun',
+                                      args.algorithm,
+                                      mods,
+                                      nested_dataset,
+                                      args.j_folds,  # Use a different fold number
+                                      nestdir,
+                                      args.bindir,
+                                      args.config)
 
-                # Run short simulation
-                print(':' * 30, 'Starting short run', ':' * 30)
-                k_fits, _, _, _ = forrest.run(args.shortg)
-                ncv_fits.append(k_fits)
-                if not args.keep:
-                    # There is no need to keep the semantic files here
-                    forrest.clean_sem_files()
+                    # Run short simulation
+                    print(':' * 30, 'Starting short run', ':' * 30)
+                    k_fits, _, _, _ = forrest.run(args.shortg)
 
-            # Compute selection time and save it
+                    # Average fitness over J-folds
+                    avg_fit = row_average(k_fits)
+                    print('Average fit ha forma', avg_fit.shape)
+                    avg_j_fits.append(avg_fit)
+
+                    if not args.keep:
+                        # There is no need to keep the semantic files here
+                        forrest.clean_sem_files()
+
+                # Compute average for each model
+                avg_model_fit = row_average(avg_j_fits)
+                ncv_fits.append(avg_model_fit)
+
+            # Compute selection time for this run and save it
             t_tot = time.perf_counter() - t_start
             logi('stats.selection.walltimes', f'Time for running selection: {t_tot}')
             global_stats['sel_time'] = global_stats.get('sel_time', 0) + t_tot
@@ -742,8 +760,9 @@ def main():
 
             # Log average selection fitness
             logi('stats.selection.cv.fitness.average', f'Average fitnesses of NCV tests (models combinations on rows)\n{row_average(ncv_fits)}')
-            # Get best models
-            bm = best_cv(ncv_fits)
+
+            # Use average validation fitness to determine best model
+            bm = np.array(ncv_fits)[:,1].argmin()
             best_models = models2[bm]
         print('*' * 30, 'Starting long run', '*' * 30)
 
