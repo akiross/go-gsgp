@@ -81,10 +81,6 @@ def load_dataset(path, skip=0):
             next(df)
         return [l.strip().split() for l in df]
 
-#def semantic_distance(s1, s2):
-#    """Compute L2-norm between two semantics."""
-#    return sum((s1 - s2) ** 2)
-
 
 class Dataset:
     """Represents a dataset to be used with k-fold cross-validation.
@@ -231,9 +227,9 @@ def file_last_line(path):
         return last_line
 
 
-def float_list(css: str):
-    """Return the comma-separated-list of floats as a list of floats."""
-    return [float(v) for v in css.split(',')]
+# def float_list(css: str):
+#     """Return the comma-separated-list of floats as a list of floats."""
+#     return [float(v) for v in css.split(',')]
 
 
 class Runner:
