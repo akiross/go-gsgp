@@ -402,36 +402,36 @@ def main():
 
     # Time series plots
     scatter('Train fitness' * use_title, ('Generation', 'Fitness'), {
-        bn[name]: (None, *indices(all_data[name]['longrun']['raw_test']))
+        bn[name]: (None, *indices(all_data[name]['longrun']['raw_train']))
         for name in all_data
     })
-    save_img(f'{prefix}train_fitness.png')
+    save_img(f'{prefix}fitness_vs_gen_train.png')
 
     scatter('Test fitness' * use_title, ('Generation', 'Fitness'), {
         bn[name]: (None, *indices(all_data[name]['longrun']['raw_test']))
         for name in all_data
     })
-    save_img(f'{prefix}test_fitness.png')
+    save_img(f'{prefix}fitness_vs_gen_test.png')
 
     scatter('Runtime' * use_title, ('Generation', 'Time [s]'), {
         bn[name]: (None, *indices(all_data[name]['longrun']['raw_timing']))
         for name in all_data
     })
-    save_img(f'{prefix}runtime_fitness.png')
+    save_img(f'{prefix}runtime_vs_gen.png')
 
     scatter('Train Runtime-vs-Fitness (average time per run)' * use_title,
             ('Time [s]', 'Fitness'),
             {bn[name]: (np.mean(all_data[name]['longrun']['timing'], axis=0),
                         *indices(all_data[name]['longrun']['raw_train']))
              for name in all_data})
-    save_img(f'{prefix}train_fitness_runtime.png')
+    save_img(f'{prefix}fitness_vs_runtime_train.png')
 
     scatter('Test Runtime-vs-fitness (average time per run)' * use_title,
             ('Time [s]', 'Fitness'),
             {bn[name]: (np.mean(all_data[name]['longrun']['timing'], axis=0),
                         *indices(all_data[name]['longrun']['raw_test']))
              for name in all_data})
-    save_img(f'{prefix}test_fitness_runtime.png')
+    save_img(f'{prefix}fitness_vs_runtime_test.png')
 
     plt.figure()
     ax = plt.subplot()
@@ -455,7 +455,7 @@ def main():
     plt.ylim(ymin=0)
     plt.xlabel('WC Time [s]')
     plt.ylabel('Fitness')
-    save_img(f'{prefix}train_fitness_runtime_wct.png')
+    save_img(f'{prefix}fitness_vs_wct_train.png')
 
     plt.figure()
     ax = plt.subplot()
@@ -479,7 +479,7 @@ def main():
     plt.ylim(ymin=0)
     plt.xlabel('WC Time [s]')
     plt.ylabel('Fitness')
-    save_img(f'{prefix}test_fitness_runtime_wct.png')
+    save_img(f'{prefix}fitness_vs_wtc_test.png')
 
     for name in all_data:
         scatter(f'{bn[name]} Train-vs-Test Fitness (Runtime)' * use_title,
@@ -556,7 +556,7 @@ def main():
         title = f'Evolution of semantic distances in time for {name}'
         ax.set_title(title * use_title)
         plt.xlabel('Generations')
-        plt.ylabel('Semantic distance (L²)')
+        plt.ylabel('Semantic distance')  # (L²)')
         plt.legend(['Train', 'Test'])
         save_img(f'{prefix}{bnf[name]}_sem_dist_evolution.png')
 
