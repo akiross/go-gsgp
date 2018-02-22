@@ -299,6 +299,8 @@ def main():
 
     use_mean = not args.median
 
+    use_title = True
+
     # Decent names for files (I used lower, but can be changed)
     better_names_files = [n.lower() for n in better_names]
 
@@ -399,32 +401,32 @@ def main():
         return central, std
 
     # Time series plots
-    scatter('Train fitness' * 0, ('Generation', 'Fitness'), {
+    scatter('Train fitness' * use_title, ('Generation', 'Fitness'), {
         bn[name]: (None, *indices(all_data[name]['longrun']['raw_test']))
         for name in all_data
     })
     save_img(f'{prefix}train_fitness.png')
 
-    scatter('Test fitness' * 0, ('Generation', 'Fitness'), {
+    scatter('Test fitness' * use_title, ('Generation', 'Fitness'), {
         bn[name]: (None, *indices(all_data[name]['longrun']['raw_test']))
         for name in all_data
     })
     save_img(f'{prefix}test_fitness.png')
 
-    scatter('Runtime' * 0, ('Generation', 'Time [s]'), {
+    scatter('Runtime' * use_title, ('Generation', 'Time [s]'), {
         bn[name]: (None, *indices(all_data[name]['longrun']['raw_timing']))
         for name in all_data
     })
     save_img(f'{prefix}runtime_fitness.png')
 
-    scatter('Train Runtime-vs-Fitness (average time per run)' * 0,
+    scatter('Train Runtime-vs-Fitness (average time per run)' * use_title,
             ('Time [s]', 'Fitness'),
             {bn[name]: (np.mean(all_data[name]['longrun']['timing'], axis=0),
                         *indices(all_data[name]['longrun']['raw_train']))
              for name in all_data})
     save_img(f'{prefix}train_fitness_runtime.png')
 
-    scatter('Test Runtime-vs-fitness (average time per run)' * 0,
+    scatter('Test Runtime-vs-fitness (average time per run)' * use_title,
             ('Time [s]', 'Fitness'),
             {bn[name]: (np.mean(all_data[name]['longrun']['timing'], axis=0),
                         *indices(all_data[name]['longrun']['raw_test']))
@@ -433,7 +435,7 @@ def main():
 
     plt.figure()
     ax = plt.subplot()
-    plt.title('Train Runtime-vs-Fitness (wall clock time)' * 0)
+    plt.title('Train Runtime-vs-Fitness (wall clock time)' * use_title)
     names = []
     for name in all_data:
         names.append(bn[name])
@@ -457,7 +459,7 @@ def main():
 
     plt.figure()
     ax = plt.subplot()
-    plt.title('Test Runtime-vs-Fitness (wall clock time)' * 0)
+    plt.title('Test Runtime-vs-Fitness (wall clock time)' * use_title)
     names = []
     for name in all_data:
         names.append(bn[name])
@@ -480,7 +482,7 @@ def main():
     save_img(f'{prefix}test_fitness_runtime_wct.png')
 
     for name in all_data:
-        scatter(f'{bn[name]} Train-vs-Test Fitness (Runtime)' * 0,
+        scatter(f'{bn[name]} Train-vs-Test Fitness (Runtime)' * use_title,
                 ('Time [s]', 'Fitness'),
                 {f'{bn[name]} {ds}': (np.mean(all_data[name]['longrun']['timing'], axis=0),
                                       *indices(all_data[name]['longrun'][ds]))
@@ -506,7 +508,7 @@ def main():
         # Plot as a circle
         ax.axis('equal')
         title = f'{bn[name]} average running time (selection -vs- evolution)'
-        ax.set_title(title * 0)
+        ax.set_title(title * use_title)
         save_img(f'{prefix}{bnf[name]}_average_running_time.png')
 
     # Selection frequencies
@@ -536,7 +538,8 @@ def main():
         ax.set_xticklabels(labels)
 
         # Set title
-        fig.suptitle(f'{name} best models combination absolute frequency' * 0)
+        fig.suptitle(
+            f'{name} best models combination absolute frequency' * use_title)
         # print('Best models freq', name, bm)
         save_img(f'{prefix}{bnf[name]}_selection_frequency.png')
 
@@ -551,7 +554,7 @@ def main():
                         alpha=0.5)
         # TODO mettere anche qui mediane e deviazioni standard
         title = f'Evolution of semantic distances in time for {name}'
-        ax.set_title(title * 0)
+        ax.set_title(title * use_title)
         plt.xlabel('Generations')
         plt.ylabel('Semantic distance (L²)')
         plt.legend(['Train', 'Test'])
