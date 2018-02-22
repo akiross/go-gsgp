@@ -322,7 +322,7 @@ def main():
     all_data = {}
     for name in out_dirs:
         pfile = f'{name}_all_data.pkl'
-        if False and os.path.exists(pfile):  # FIXME
+        if os.path.exists(pfile):
             print('Found existing file', pfile, 'loading it')
             # Load previously saved data
             with open(pfile, 'rb') as fp:
@@ -437,7 +437,7 @@ def main():
     names = []
     for name in all_data:
         names.append(bn[name])
-        seltime = stats[name]['sel_time'] / (stats[name]['n_runs'] * len(stats[name]['models2']))
+        seltime = stats[name]['sel_time'] / stats[name]['n_runs']
         lontime = stats[name]['lon_time'] / stats[name]['n_runs']
         fitdata = indices(all_data[name]['longrun']['raw_train'])
         runtime = np.linspace(seltime, seltime+lontime, len(fitdata[0]))
@@ -461,7 +461,7 @@ def main():
     names = []
     for name in all_data:
         names.append(bn[name])
-        seltime = stats[name]['sel_time'] / (stats[name]['n_runs'] * len(stats[name]['models2']))
+        seltime = stats[name]['sel_time'] / stats[name]['n_runs']
         lontime = stats[name]['lon_time'] / stats[name]['n_runs']
         fitdata = indices(all_data[name]['longrun']['raw_test'])
         runtime = np.linspace(seltime, seltime+lontime, len(fitdata[0]))
