@@ -62,3 +62,6 @@ This will read the data in the specified directory and produce the results
 using `some_prefix_` prepended to files. This will also pickle the data onto
 separated files for later analysis (in case you change something in the plots,
 you don't want to re-read all the data from scratch).
+
+The `-w` flag can be used for extra-wide plots, `-c` for colorful ggplots and
+`-t` for having a title over the plots.

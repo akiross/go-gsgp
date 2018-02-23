@@ -10,13 +10,9 @@ from cycler import cycler
 from itertools import count
 from matplotlib import pyplot as plt
 
-# plt.style.use('ggplot')
-# plt.rcParams['figure.figsize'] = (15, 5)
-
 
 def use_grayscale_print_style():
     plt.style.use('grayscale')
-    plt.rcParams['figure.figsize'] = (6, 3)
     plt.rcParams['figure.dpi'] = 200
     plt.rcParams['lines.linewidth'] = 2.0
     plt.rcParams['font.size'] = 12
@@ -312,6 +308,12 @@ def parse_arguments():
             help='name-directory pair to load')
     parser.add_argument('-m', '--median', action='store_true',
             help='Use median instead of mean to average data')
+    parser.add_argument('-t', '--use-title', action='store_true',
+            help='Add a title to plots')
+    parser.add_argument('-c', '--use-color', action='store_true',
+            help='Enable colorful plots (for screens)')
+    parser.add_argument('-w', '--extra-wide', action='store_true',
+            help='Enable extra-wide plots')
     parser.add_argument('prefix', help='Prefix for output files')
     return parser.parse_args()
 
@@ -376,26 +378,25 @@ def main():
     args = parse_arguments()
     better_names, out_dirs = zip(*args.dir)
     prefix = args.prefix
-    #print('Using prefix', pod)
-    # Where data files are stored, these must be CLEAN directory names in PWD
-    # e.g. foo/ -> invalid, ..foo -> invalid, ./foo/ -> invalid, foo -> valid
-    #out_dirs = [pod + 'none', pod + 'mod', pod + 'all']
-    #else:
-    #    print('Using directories', pod)
-    #    out_dirs = pod
-
     use_mean = not args.median
 
-    # Skip titles
-    use_title = False
+    # Use a title on the plots
+    ut = args.use_title
 
     # Decent names for files (I used lower, but can be changed)
     better_names_files = [n.lower() for n in better_names]
 
-    # Probably nothing to change below this line
-
     # Load style
-    use_grayscale_print_style()
+    if not args.use_color:
+        use_grayscale_print_style()
+    else:
+        # A decent style for screens
+        plt.style.use('ggplot')
+
+    if args.extra_wide:
+        plt.rcParams['figure.figsize'] = (15, 5)
+    else:
+        plt.rcParams['figure.figsize'] = (6, 3)
 
     # Build names mapping
     bn = dict(zip(out_dirs, better_names))
@@ -445,32 +446,32 @@ def main():
         return central, std
 
     # Time series plots
-    scatter('Train fitness' * use_title, ('Generation', 'Fitness'), {
+    scatter('Train fitness' * ut, ('Generation', 'Fitness'), {
         bn[name]: (None, *indices(all_data[name]['longrun']['raw_train']))
         for name in all_data
     })
     save_img(f'{prefix}fitness_vs_gen_train.png')
 
-    scatter('Test fitness' * use_title, ('Generation', 'Fitness'), {
+    scatter('Test fitness' * ut, ('Generation', 'Fitness'), {
         bn[name]: (None, *indices(all_data[name]['longrun']['raw_test']))
         for name in all_data
     })
     save_img(f'{prefix}fitness_vs_gen_test.png')
 
-    scatter('Runtime' * use_title, ('Generation', 'Time [s]'), {
+    scatter('Runtime' * ut, ('Generation', 'Time [s]'), {
         bn[name]: (None, *indices(all_data[name]['longrun']['raw_timing']))
         for name in all_data
     })
     save_img(f'{prefix}runtime_vs_gen.png')
 
-    scatter('Train Runtime-vs-Fitness (average time per run)' * use_title,
+    scatter('Train Runtime-vs-Fitness (average time per run)' * ut,
             ('Time [s]', 'Fitness'),
             {bn[name]: (all_data[name]['longrun']['timing'][0],
                         *indices(all_data[name]['longrun']['raw_train']))
              for name in all_data})
     save_img(f'{prefix}fitness_vs_runtime_train.png')
 
-    scatter('Test Runtime-vs-fitness (average time per run)' * use_title,
+    scatter('Test Runtime-vs-fitness (average time per run)' * ut,
             ('Time [s]', 'Fitness'),
             {bn[name]: (all_data[name]['longrun']['timing'][0],
                         *indices(all_data[name]['longrun']['raw_test']))
@@ -480,7 +481,7 @@ def main():
     # Plot fitness in wall-clock time
     plt.figure()
     ax = plt.subplot()
-    plt.title('Train Runtime-vs-Fitness (wall clock time)' * use_title)
+    plt.title('Train Runtime-vs-Fitness (wall clock time)' * ut)
     names = []
     for name in all_data:
         names.append(bn[name])
@@ -509,7 +510,7 @@ def main():
 
     plt.figure()
     ax = plt.subplot()
-    plt.title('Test Runtime-vs-Fitness (wall clock time)' * use_title)
+    plt.title('Test Runtime-vs-Fitness (wall clock time)' * ut)
     names = []
     for name in all_data:
         names.append(bn[name])
@@ -537,7 +538,7 @@ def main():
     save_img(f'{prefix}fitness_vs_wtc_test.png')
 
     for name in all_data:
-        scatter(f'{bn[name]} Train-vs-Test Fitness (Runtime)' * use_title,
+        scatter(f'{bn[name]} Train-vs-Test Fitness (Runtime)' * ut,
                 ('Time [s]', 'Fitness'),
                 {f'{bn[name]} {ds}': (all_data[name]['longrun']['timing'][0],
                                       *indices(all_data[name]['longrun'][ds]))
@@ -566,7 +567,7 @@ def main():
         # Plot as a circle
         ax.axis('equal')
         title = f'{bn[name]} average running time (selection -vs- evolution)'
-        ax.set_title(title * use_title)
+        ax.set_title(title * ut)
         save_img(f'{prefix}{bnf[name]}_average_running_time.png')
 
     # Selection frequencies
@@ -602,7 +603,7 @@ def main():
 
         # Set title
         fig.suptitle(
-            f'{name} best models combination absolute frequency' * use_title)
+            f'{name} best models combination absolute frequency' * ut)
         # print('Best models freq', name, bm)
         save_img(f'{prefix}{bnf[name]}_selection_frequency.png')
 
@@ -617,7 +618,7 @@ def main():
                         alpha=0.5)
         # TODO mettere anche qui mediane e deviazioni standard
         title = f'Evolution of semantic distances in time for {name}'
-        ax.set_title(title * use_title)
+        ax.set_title(title * ut)
         plt.xlabel('Generations')
         plt.ylabel('Semantic distance')  # (L²)')
         plt.legend(['Train', 'Test'])
