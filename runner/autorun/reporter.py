@@ -441,14 +441,20 @@ def main():
              for name in all_data})
     save_img(f'{prefix}fitness_vs_runtime_test.png')
 
+    # Plot fitness in wall-clock time
     plt.figure()
     ax = plt.subplot()
     plt.title('Train Runtime-vs-Fitness (wall clock time)' * use_title)
     names = []
     for name in all_data:
         names.append(bn[name])
-        seltime = stats[name]['sel_time'] / stats[name]['n_runs']
-        lontime = stats[name]['lon_time'] / stats[name]['n_runs']
+        # In the plot, use average time of a single run
+        n_runs = stats[name]['args']['runs']
+        k_folds = stats[name]['args']['k_folds']
+        j_folds = stats[name]['args']['j_folds']
+        # sel_time is the total time for all runs and k_folds
+        seltime = stats[name]['sel_time'] / (n_runs * k_folds)
+        lontime = stats[name]['lon_time'] / (n_runs * k_folds)
         fitdata = indices(all_data[name]['longrun']['raw_train'])
         runtime = np.linspace(seltime, seltime+lontime, len(fitdata[0]))
         plt.plot(runtime, fitdata[0])
@@ -471,8 +477,13 @@ def main():
     names = []
     for name in all_data:
         names.append(bn[name])
-        seltime = stats[name]['sel_time'] / stats[name]['n_runs']
-        lontime = stats[name]['lon_time'] / stats[name]['n_runs']
+        # In the plot, use average time of a single run
+        n_runs = stats[name]['args']['runs']
+        k_folds = stats[name]['args']['k_folds']
+        j_folds = stats[name]['args']['j_folds']
+        # sel_time is the total time for all runs and k_folds
+        seltime = stats[name]['sel_time'] / (n_runs * k_folds)
+        lontime = stats[name]['lon_time'] / (n_runs * k_folds)
         fitdata = indices(all_data[name]['longrun']['raw_test'])
         runtime = np.linspace(seltime, seltime+lontime, len(fitdata[0]))
         plt.plot(runtime, fitdata[0])
@@ -500,9 +511,12 @@ def main():
     # Pie charts with running times
     for name in stats:
         plt.figure()
+        n_runs  = stats[name]['args']['runs']
+        k_folds  = stats[name]['args']['k_folds']
+        j_folds = stats[name]['args']['j_folds']
         runtimes = stats[name]['sel_time'], stats[name]['lon_time']
-        labels = [f'selection\n{runtimes[0]/stats[name]["n_runs"]:.1f}s',
-                  f'evolution\n{runtimes[1]/stats[name]["n_runs"]:.1f}s']
+        labels = [f'selection ({j_folds}-folds)\n{runtimes[0]/n_runs:.1f}s',
+                  f'evolution ({k_folds}-folds)\n{runtimes[1]/n_runs:.1f}s']
 
         fig, ax = plt.subplots()
         patches = ax.pie([r for r in runtimes],

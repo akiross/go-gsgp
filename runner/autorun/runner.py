@@ -464,7 +464,8 @@ def write_stats(args, models):
     global_stats['n_runs'] = args.runs
     # Number of k-folds
     global_stats['k_folds'] = args.k_folds
-
+    # Number of j-folds
+    global_stats['j_folds'] = args.j_folds
 
 def get_run_path(outdir, r):
     '''Return the path for the r-th run, given outdir as base directory.'''
@@ -585,13 +586,11 @@ def main():
         if args.all:
             best_models = models2[-1]  # Use all models 
             bm = len(models2) - 1  # Last combination
-            # global_stats['best_models'] = global_stats.get('best_models', Counter()) + Counter({len(models2): 1})
-            global_stats['sel_time'] = global_stats.get('sel_time', 0)
+            tot_time = 0  # No time spent
         elif args.none:
             best_models = models2[0] # Use no models 
             bm = 0
-            # global_stats['best_models'] = global_stats.get('best_models', Counter()) + Counter({0: 1})
-            global_stats['sel_time'] = global_stats.get('sel_time', 0)
+            tot_time = 0  # No time spent
         else:
             t_start = time.perf_counter()
             # Create somepath/sim/sim{r}/selection
@@ -648,9 +647,6 @@ def main():
 
             # Compute selection time for this run and save it
             t_tot = time.perf_counter() - t_start
-            logi('stats.selection.walltimes', f'Time for running selection: {t_tot}')
-            global_stats['sel_time'] = global_stats.get('sel_time', 0) + t_tot
-            global_stats.setdefault('sel_times', []).append(t_tot)
 
             # Log average selection fitness
             logi('stats.selection.cv.fitness.average', f'Average fitnesses of NCV tests (models combinations on rows)\n{row_average(ncv_fits)}')
@@ -659,9 +655,13 @@ def main():
             bm = np.array(ncv_fits)[:,1].argmin()
             best_models = models2[bm]
 
-        logi('stats.selection.models.best', f'{bm} {best_models}')
+        # Save selection time
+        global_stats['sel_time'] = global_stats.get('sel_time', 0) + t_tot
+        global_stats.setdefault('sel_times', []).append(t_tot)
+        logi('stats.selection.walltimes', f'Time for running selection: {t_tot}')
         # Increment best model usage
         global_stats['best_models'] = global_stats.get('best_models', Counter()) + Counter({str(bm): 1})
+        logi('stats.selection.models.best', f'{bm} {best_models}')
 
         print('Performing long run with best models', models2[bm])
         # Prepare simulation, storing data in somepath/sim/sim{r}/longrun
