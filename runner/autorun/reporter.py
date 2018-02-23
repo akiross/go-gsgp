@@ -1,5 +1,6 @@
 import os
 import sys
+import gzip
 import json
 import pickle
 import argparse
@@ -203,16 +204,49 @@ def load_semantic_avg(name, run, dataset):
     return np.loadtxt(f'{name}/{name}{run}/longrun/sem_{dataset}_avg.txt')
 
 
-def load_sem_distance_avg(name, run, dataset):
-    """Return the first-last semantic distance for the specified run."""
-    sem = load_semantic_avg(name, run, dataset)
-    sd = ((sem - sem[0]) ** 2).mean(axis=1) ** 0.5  # Sum along rows
-    return sd  # / len(sd)
+def load_semantic_files(sem_files):
+    """Given a list of paths, return loaded semantics, as nested lists.
+
+    Returned list has length len(sem_files), one item per semantic.
+    Each semantic has length R, where is the number of points in time (rows).
+    Each row has length S, the number of values in the semantic (dataset).
+    """
+    sem = []
+    for path in sem_files:
+        with gzip.open(path) as fp:
+            sem.append([[float(v) for v in l.split(',')] for l in fp])
+    return sem
 
 
-def load_avg_sem_distance_data(name, n_runs, dataset):
+def load_sem_distance_avg(name, run, k_folds, dataset):
+    """Return the first-last semantic distance for the specified run.
+    
+    Distances are computed as L² norm of differences between first and last
+    semantic vectors for each fold, then averaged along folds to yield a
+    a real value for each time step in the data series.
+    """
+    # Load all semantic data
+    # Prepare list of files containing semantic data
+    sem_files = (f'{name}/{name}{run}/longrun/sem_{dataset}_{k}.txt.gz'
+                 for k in range(k_folds))
+    # Load semantic data with shape:
+    # sem.shape = (k_folds, time_steps, dataset_size)
+    sem = np.array(load_semantic_files(sem_files))
+    assert k_folds == sem.shape[0]
+    # To compute average distances, first compute distances for every run
+    # Distance for time t is sum((sem[:,t,:] - sem[:,0,:])**2)**0.5
+    t0 = np.repeat(sem[:,0,:], sem.shape[1], axis=0).reshape(sem.shape)
+    sd = (sem - t0) ** 2  # Squared differences
+    # Sum along semantic axis and take square root
+    # yielding shape ac.shape == (k_folds, time_steps)
+    ac = np.sqrt(sd.sum(axis=2))
+    # Compute average along rows (k_folds)
+    return ac.mean(axis=0)
+
+
+def load_avg_sem_distance_data(name, n_runs, k_folds, dataset):
     """Loads average semantic distance for specified dataset in a list."""
-    return np.array([load_sem_distance_avg(name, i, dataset)
+    return np.array([load_sem_distance_avg(name, i, k_folds, dataset)
                      for i in range(n_runs)])
 
 
@@ -381,11 +415,13 @@ def main():
             with open(pfile, 'rb') as fp:
                 sem_evo_dat_train, sem_evo_dat_test = pickle.load(fp)
         else:
+            n_runs = stats[name]['args']['runs']
+            k_folds = stats[name]['args']['k_folds']
             print('Pickled file', pfile, 'not found, creating')
             sem_evo_dat_train = load_avg_sem_distance_data(
-                    name, stats[name]['args']['runs'], 'train')
+                    name, n_runs, k_folds, 'train')
             sem_evo_dat_test = load_avg_sem_distance_data(
-                    name, stats[name]['args']['runs'], 'test')
+                    name, n_runs, k_folds, 'test')
             with open(pfile, 'wb') as fp:
                 pickle.dump((sem_evo_dat_train, sem_evo_dat_test), fp)
         print('Computing averages') # , shp(sem_evo_dat_train))
@@ -548,16 +584,21 @@ def main():
 
         # Prepare data for plotting
         x = list(range(nm))
-        h = [bm.get(str(i), 0) for i in range(nm)]
+        h = [int(bm.get(str(i), 0)) for i in range(nm)]
+        # Convert to relative values
+        tot = sum(h)
+        h_rel = [100 * v / tot for v in h]
 
         # Prepare bar chart
         fig, ax = plt.subplots()
-        ax.bar(x, h)
+        ax.bar(x, h_rel)
 
         # Write models in column
         labels = ['\n'.join(s[3:] for s in m) if m else '(none)' for m in mc]
         ax.set_xticks(range(nm))
         ax.set_xticklabels(labels)
+        plt.xlabel('Models combinations')
+        plt.ylabel('Selection freq. (%)')
 
         # Set title
         fig.suptitle(

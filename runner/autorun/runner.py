@@ -58,10 +58,14 @@ def row_average(table):
 
 
 def load_semantic_file(fp):
-    """Return the semantic from the specified file-like object."""
+    """Return the semantic from the specified file-like object.
+    
+    Return value has shape (R, S) where R is the number of rows accumulated in
+    time, while S is the size of the semantic (dataset).
+    """
     sem = []
     for l in fp:
-        sem.append(np.array([float(v) for v in l.split(',')]))
+        sem.append([float(v) for v in l.split(',')])
     return np.array(sem)
 
 
@@ -72,6 +76,20 @@ def load_avg_semantic(sem_files):
         with zopen(path) as fp:
             sem.append(load_semantic_file(fp))
     return row_average(np.array(sem))
+
+
+# def load_semantic_files(sem_files):
+#     """Given a list of paths, return loaded semantics, as nested lists.
+# 
+#     Returned list has length len(sem_files), one item per semantic.
+#     Each semantic has length R, where is the number of points in time (rows).
+#     Each row has length S, the number of values in the semantic (dataset).
+#     """
+#     sem = []
+#     for path in sem_files:
+#         with zopen(path) as fp:
+#             sem.append([float(v) for l in fp for v in l.split(',')])
+#     return sem
 
 
 def load_dataset(path, skip=0):
@@ -423,7 +441,7 @@ def parse_arguments():
     parser.add_argument('--noask', action='store_true',
                         help='Do not ask for config checking')
     parser.add_argument('--keep', action='store_true',
-                        help='Keep semantic files after computing averages')
+                        help='Keep semantic files for selection')
     parser.add_argument('--j_folds', '-j', type=int, default=5,
                         help='Number of nested folds')
     parser.add_argument('--k_folds', '-k', type=int, default=5,
@@ -677,12 +695,8 @@ def main():
         # Run simulation
         k_fits, k_timing, avg_sem_train, avg_sem_test = forrest.run(args.longg)
 
-        # Write semantic data
+        # Write average semantic data
         forrest.save_files(avg_sem_train, avg_sem_test)
-
-        if not args.keep:
-            # There is no need to keep the semantic files here
-            forrest.clean_sem_files()
 
         # Save logs and stats
         logi('stats.longrun.cv.fitness.average', f'Average CV: {row_average(k_fits)}')
