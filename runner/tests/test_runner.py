@@ -2,7 +2,7 @@ import io
 import pytest
 import tempfile
 import numpy as np
-import autorun.main as arm
+import autorun.runner as arm
 from unittest.mock import MagicMock, patch, call
 
 
@@ -37,16 +37,16 @@ def test_row_average():
     assert all(arm.row_average(dat) == [1, 4, 0])
 
 
-def test_best_cv():
-    fits = [
-            # Mod1    Mod2    Mod3
-            [(1, 4), (1, 1), (1, 4)],  # Run 1
-            [(2, 8), (2, 4), (2, 6)],  # Run 2
-            [(3, 6), (3, 3), (3, 8)],  # Run 3
-            [(4, 2), (4, 2), (4, 4)],  # Run 4
-    ]
-    assert arm.best_cv(fits) == 1  # Index of best model
-
+# def test_best_cv():
+#     fits = [
+#             # Mod1    Mod2    Mod3
+#             [(1, 4), (1, 1), (1, 4)],  # Run 1
+#             [(2, 8), (2, 4), (2, 6)],  # Run 2
+#             [(3, 6), (3, 3), (3, 8)],  # Run 3
+#             [(4, 2), (4, 2), (4, 4)],  # Run 4
+#     ]
+#     assert arm.best_cv(fits) == 1  # Index of best model
+# 
 
 def test_load_semantic_file():
     rows = [
@@ -73,8 +73,8 @@ def test_run_path():
     assert arm.get_run_path('../.././foo/', 6) == '../.././foo/foo6'
 
 
-@patch('autorun.main.load_dataset')
-@patch('autorun.main.mkdir')
+@patch('autorun.runner.load_dataset')
+@patch('autorun.runner.mkdir')
 def test_Dataset(mkdir, load_dataset):
     '''Testing the Dataset class.'''
     # Prepare a dataset that would be loaded from file
@@ -85,7 +85,8 @@ def test_Dataset(mkdir, load_dataset):
     load_dataset.return_value = dat
     # Build dataset
     with patch.object(arm.Dataset, '_write_dataset') as wd:
-        arm.Dataset(None, 3, 'dir', False)
+        ds = arm.Dataset(None, 3, 'dir')
+        ds.generate_folds(False)
         calls = [
                 call('dir/dataset/train_0.dat', 2, 2, [dat[1], dat[2]]),
                 call('dir/dataset/test_0.dat', 2, 1, [dat[0]]),
@@ -106,10 +107,10 @@ def test_Runner():
     "algo,models,data,gens,k_folds,outdir,bindir,conf", [
         ('algo', ['m1', 'm2'], 'data.txt', 100, 3, 'outd', 'bind', 'conf.ini'),
     ])
-@patch('autorun.main.Runner')
-@patch('autorun.main.Dataset')
-@patch('autorun.main.Logger')
-@patch('autorun.main.load_avg_semantic')
+@patch('autorun.runner.Runner')
+@patch('autorun.runner.Dataset')
+@patch('autorun.runner.Logger')
+@patch('autorun.runner.load_avg_semantic')
 def test_forrest(sem_loader, Logger, Dataset, Runner,
                  algo, models, data, gens,
                  k_folds, outdir, bindir, conf):
@@ -160,9 +161,9 @@ def test_forrest(sem_loader, Logger, Dataset, Runner,
     "algo,models,data,gens,k_folds,outdir,bindir,conf", [
         ('algo', ['m1', 'm2'], 'data.txt', 100, 3, 'outd', 'bind', 'conf.ini'),
     ])
-@patch('autorun.main.Runner')
-@patch('autorun.main.Dataset')
-@patch('autorun.main.load_avg_semantic')
+@patch('autorun.runner.Runner')
+@patch('autorun.runner.Dataset')
+@patch('autorun.runner.load_avg_semantic')
 def test_integration_forrest(sem_loader, Dataset, Runner,
                  algo, models, data, gens,
                  k_folds, outdir, bindir, conf):
@@ -175,7 +176,7 @@ def test_integration_forrest(sem_loader, Dataset, Runner,
     Runner.reset_mock()
 
     # Test setup
-    with patch('autorun.main.mkdir'):
+    with patch('autorun.runner.mkdir'):
         forrest = arm.Forrest('integr', algo, models, dataset, k_folds,
                               outdir, bindir, conf)
 

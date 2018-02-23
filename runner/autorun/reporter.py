@@ -299,7 +299,8 @@ def main():
 
     use_mean = not args.median
 
-    use_title = True
+    # Skip titles
+    use_title = False
 
     # Decent names for files (I used lower, but can be changed)
     better_names_files = [n.lower() for n in better_names]
