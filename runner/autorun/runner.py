@@ -182,60 +182,6 @@ class Dataset:
             assert len(rows) == n_rows
             self._write_dataset(test_file, n_vars, n_rows, rows)
 
-    # def _prepare_datasets(self, k, randomize, check_semantic_consistency=True, drop_to_match=True):
-    #     """Prepare datafiles for k-fold cross validation,
-    #     producing train_*.dat and test_*.dat files in output directory.
-    #     """
-    #     # Number of variables in the dataset
-    #     n_vars = len(self._ds[0]) - 1
-    #     dsl = len(self._ds)  # (total) dataset length
-
-    #     if k > dsl:
-    #         print(f'Dataset has size {dsl}, k cannot be larger than {dsl//2}.')
-    #         print('Aborting')
-    #         sys.exit(1)
-
-    #     size, rem = divmod(dsl, k)  # Size of each fold
-
-    #     # We might want to have semantic consistency among the folds
-    #     # (i.e. all folds of the same size, so we can average their semantics)
-    #     # Check if the number of rows is exactly divisible
-    #     if check_semantic_consistency and rem != 0:
-    #         ok_sizes = [i for i in range(2, dsl // 2) if dsl % i == 0]
-    #         print(f'Dataset has size {dsl} which cannot divided in {k} folds')
-    #         print(f'Here some valid k values you can use:\n{ok_sizes}')
-    #         print('Aborting')
-    #         sys.exit(1) # Do not proceed: we rely on this
-
-    #     # Shuffle rows
-    #     if randomize:
-    #         shuffle(self._ds)
-
-    #     # Generate files
-    #     self.n_train_samples = dsl - size
-    #     self.n_test_samples = size
-
-    #     # Iterate on starting points of each fold (0, size, 2*size, ...)
-    #     for k, i in enumerate(range(0, dsl, size)):
-    #         # Ending point in the dataset
-    #         j = min(dsl, i+size)
-    #         # Path of files to write
-    #         train_file = self.get_train_path(k)
-    #         test_file = self.get_test_path(k)
-    #         self._written.append((train_file, test_file))
-
-    #         # Write train dataset
-    #         n_rows = dsl - j + i
-    #         rows = self._ds[:i] + self._ds[j:]
-    #         assert len(rows) == n_rows
-    #         self._write_dataset(train_file, n_vars, n_rows, rows)
-
-    #         # Write test dataset
-    #         n_rows = j - i
-    #         rows = self._ds[i:j]
-    #         assert len(rows) == n_rows
-    #         self._write_dataset(test_file, n_vars, n_rows, rows)
-
     def _write_dataset(self, path, n_vars, n_rows, data):
         """Write data on file."""
         with zopen(path, 'wt') as fp:
