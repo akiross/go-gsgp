@@ -282,46 +282,14 @@ def parse_arguments():
     return parser.parse_args()
 
 
-def main():
-    """Read data and produce statistics."""
-    # old_cycler = plt.rcParams['axes.prop_cycle']
-
-    args = parse_arguments()
-    better_names, out_dirs = zip(*args.dir)
-    prefix = args.prefix
-    #print('Using prefix', pod)
-    # Where data files are stored, these must be CLEAN directory names in PWD
-    # e.g. foo/ -> invalid, ..foo -> invalid, ./foo/ -> invalid, foo -> valid
-    #out_dirs = [pod + 'none', pod + 'mod', pod + 'all']
-    #else:
-    #    print('Using directories', pod)
-    #    out_dirs = pod
-
-    use_mean = not args.median
-
-    # Skip titles
-    use_title = False
-
-    # Decent names for files (I used lower, but can be changed)
-    better_names_files = [n.lower() for n in better_names]
-
-    # Probably nothing to change below this line
-
-    # Load style
-    use_grayscale_print_style()
-
-    # Build names mapping
-    bn = dict(zip(out_dirs, better_names))
-    bnf = dict(zip(out_dirs, better_names_files))
-
+def load_all_data(out_dirs):
+    """Load all the data from a structured directory."""
     # Load global statistics
     stats = {}
     for name in out_dirs:
         with open(os.path.join(name, 'stats.json')) as statsfile:
             stats[name] = json.load(statsfile)
-
-    # Load training data from specified directories
-    print('Loading train and test data')
+    # Load data
     all_data = {}
     for name in out_dirs:
         pfile = f'{name}_all_data.pkl'
@@ -363,6 +331,45 @@ def main():
             # Save data to file for convenience
             with open(pfile, 'wb') as fp:
                 pickle.dump(all_data[name], fp)
+    # Return loaded data
+    return all_data, stats
+
+
+def main():
+    """Read data and produce statistics."""
+    # old_cycler = plt.rcParams['axes.prop_cycle']
+
+    args = parse_arguments()
+    better_names, out_dirs = zip(*args.dir)
+    prefix = args.prefix
+    #print('Using prefix', pod)
+    # Where data files are stored, these must be CLEAN directory names in PWD
+    # e.g. foo/ -> invalid, ..foo -> invalid, ./foo/ -> invalid, foo -> valid
+    #out_dirs = [pod + 'none', pod + 'mod', pod + 'all']
+    #else:
+    #    print('Using directories', pod)
+    #    out_dirs = pod
+
+    use_mean = not args.median
+
+    # Skip titles
+    use_title = False
+
+    # Decent names for files (I used lower, but can be changed)
+    better_names_files = [n.lower() for n in better_names]
+
+    # Probably nothing to change below this line
+
+    # Load style
+    use_grayscale_print_style()
+
+    # Build names mapping
+    bn = dict(zip(out_dirs, better_names))
+    bnf = dict(zip(out_dirs, better_names_files))
+
+    # Load training data from specified directories
+    print('Loading train and test data')
+    all_data, stats = load_all_data(out_dirs)
 
     # Load semantic distances
     print('Loading semantic data')
@@ -422,14 +429,14 @@ def main():
 
     scatter('Train Runtime-vs-Fitness (average time per run)' * use_title,
             ('Time [s]', 'Fitness'),
-            {bn[name]: (np.mean(all_data[name]['longrun']['timing'], axis=0),
+            {bn[name]: (all_data[name]['longrun']['timing'][0],
                         *indices(all_data[name]['longrun']['raw_train']))
              for name in all_data})
     save_img(f'{prefix}fitness_vs_runtime_train.png')
 
     scatter('Test Runtime-vs-fitness (average time per run)' * use_title,
             ('Time [s]', 'Fitness'),
-            {bn[name]: (np.mean(all_data[name]['longrun']['timing'], axis=0),
+            {bn[name]: (all_data[name]['longrun']['timing'][0],
                         *indices(all_data[name]['longrun']['raw_test']))
              for name in all_data})
     save_img(f'{prefix}fitness_vs_runtime_test.png')
@@ -485,7 +492,7 @@ def main():
     for name in all_data:
         scatter(f'{bn[name]} Train-vs-Test Fitness (Runtime)' * use_title,
                 ('Time [s]', 'Fitness'),
-                {f'{bn[name]} {ds}': (np.mean(all_data[name]['longrun']['timing'], axis=0),
+                {f'{bn[name]} {ds}': (all_data[name]['longrun']['timing'][0],
                                       *indices(all_data[name]['longrun'][ds]))
                  for ds in ['raw_train', 'raw_test']})
         save_img(f'{prefix}{bnf[name]}_train_vs_test_fitness_runtime.png')
