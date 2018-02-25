@@ -300,6 +300,12 @@ def save_img(path):
     plt.close()
 
 
+def show_img(unused):
+    plt.tight_layout()
+    plt.show()
+    plt.close()
+
+
 def parse_arguments():
     parser = argparse.ArgumentParser(
         description="Read results and generate plots and statistics")
@@ -314,6 +320,8 @@ def parse_arguments():
             help='Enable colorful plots (for screens)')
     parser.add_argument('-w', '--extra-wide', action='store_true',
             help='Enable extra-wide plots')
+    parser.add_argument('-g', '--gui', action='store_true',
+            help='Show plots in a GUI instead of saving to file')
     parser.add_argument('prefix', help='Prefix for output files')
     return parser.parse_args()
 
@@ -398,6 +406,12 @@ def main():
     else:
         plt.rcParams['figure.figsize'] = (6, 3)
 
+    if args.gui:
+        # plt.ion()  # Interactive mode on, to show multiple images at once
+        render = show_img
+    else:
+        render = save_img
+
     # Build names mapping
     bn = dict(zip(out_dirs, better_names))
     bnf = dict(zip(out_dirs, better_names_files))
@@ -450,33 +464,33 @@ def main():
         bn[name]: (None, *indices(all_data[name]['longrun']['raw_train']))
         for name in all_data
     })
-    save_img(f'{prefix}fitness_vs_gen_train.png')
+    render(f'{prefix}fitness_vs_gen_train.png')
 
     scatter('Test fitness' * ut, ('Generation', 'Fitness'), {
         bn[name]: (None, *indices(all_data[name]['longrun']['raw_test']))
         for name in all_data
     })
-    save_img(f'{prefix}fitness_vs_gen_test.png')
+    render(f'{prefix}fitness_vs_gen_test.png')
 
     scatter('Runtime' * ut, ('Generation', 'Time [s]'), {
         bn[name]: (None, *indices(all_data[name]['longrun']['raw_timing']))
         for name in all_data
     })
-    save_img(f'{prefix}runtime_vs_gen.png')
+    render(f'{prefix}runtime_vs_gen.png')
 
     scatter('Train Runtime-vs-Fitness (average time per run)' * ut,
             ('Time [s]', 'Fitness'),
             {bn[name]: (all_data[name]['longrun']['timing'][0],
                         *indices(all_data[name]['longrun']['raw_train']))
              for name in all_data})
-    save_img(f'{prefix}fitness_vs_runtime_train.png')
+    render(f'{prefix}fitness_vs_runtime_train.png')
 
     scatter('Test Runtime-vs-fitness (average time per run)' * ut,
             ('Time [s]', 'Fitness'),
             {bn[name]: (all_data[name]['longrun']['timing'][0],
                         *indices(all_data[name]['longrun']['raw_test']))
              for name in all_data})
-    save_img(f'{prefix}fitness_vs_runtime_test.png')
+    render(f'{prefix}fitness_vs_runtime_test.png')
 
     # Plot fitness in wall-clock time
     plt.figure()
@@ -506,7 +520,7 @@ def main():
     plt.ylim(ymin=0)
     plt.xlabel('WC Time [s]')
     plt.ylabel('Fitness')
-    save_img(f'{prefix}fitness_vs_wct_train.png')
+    render(f'{prefix}fitness_vs_wct_train.png')
 
     plt.figure()
     ax = plt.subplot()
@@ -535,7 +549,7 @@ def main():
     plt.ylim(ymin=0)
     plt.xlabel('WC Time [s]')
     plt.ylabel('Fitness')
-    save_img(f'{prefix}fitness_vs_wtc_test.png')
+    render(f'{prefix}fitness_vs_wtc_test.png')
 
     for name in all_data:
         scatter(f'{bn[name]} Train-vs-Test Fitness (Runtime)' * ut,
@@ -543,11 +557,10 @@ def main():
                 {f'{bn[name]} {ds}': (all_data[name]['longrun']['timing'][0],
                                       *indices(all_data[name]['longrun'][ds]))
                  for ds in ['raw_train', 'raw_test']})
-        save_img(f'{prefix}{bnf[name]}_train_vs_test_fitness_runtime.png')
+        render(f'{prefix}{bnf[name]}_train_vs_test_fitness_runtime.png')
 
     # Pie charts with running times
     for name in stats:
-        plt.figure()
         n_runs  = stats[name]['args']['runs']
         k_folds  = stats[name]['args']['k_folds']
         j_folds = stats[name]['args']['j_folds']
@@ -568,11 +581,10 @@ def main():
         ax.axis('equal')
         title = f'{bn[name]} average running time (selection -vs- evolution)'
         ax.set_title(title * ut)
-        save_img(f'{prefix}{bnf[name]}_average_running_time.png')
+        render(f'{prefix}{bnf[name]}_average_running_time.png')
 
     # Selection frequencies
     for name in stats:
-        plt.figure()
         # Best model frequency
         bm = stats[name]['best_models']
         # Models combinations
@@ -605,7 +617,7 @@ def main():
         fig.suptitle(
             f'{name} best models combination absolute frequency' * ut)
         # print('Best models freq', name, bm)
-        save_img(f'{prefix}{bnf[name]}_selection_frequency.png')
+        render(f'{prefix}{bnf[name]}_selection_frequency.png')
 
     # Plot semantic distances
     for name in out_dirs:
@@ -622,7 +634,7 @@ def main():
         plt.xlabel('Generations')
         plt.ylabel('Semantic distance')  # (L²)')
         plt.legend(['Train', 'Test'])
-        save_img(f'{prefix}{bnf[name]}_sem_dist_evolution.png')
+        render(f'{prefix}{bnf[name]}_sem_dist_evolution.png')
 
 
 if __name__ == '__main__':
