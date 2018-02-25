@@ -139,7 +139,10 @@ def load_cv_data(path):
 
 
 def load_runs(prefix_path, sub_name, sub_prefix='{prefix}{r}'):
-    """Load runs data."""
+    """Load runs data, returns dictionary with both raw and processed data.
+    
+    Raw data are tables with one row per run.
+    """
     # Get simulation name
     prefix = os.path.basename(prefix_path)
     # Lists for data
@@ -420,7 +423,7 @@ def main():
     print('Loading train and test data')
     all_data, stats = load_all_data(out_dirs)
 
-    # Load semantic distances
+    # Load semantic distances TODO move to function
     print('Loading semantic data')
     sem_evo_trains, sem_evo_tests = {}, {}
     for name in out_dirs:
@@ -491,6 +494,17 @@ def main():
                         *indices(all_data[name]['longrun']['raw_test']))
              for name in all_data})
     render(f'{prefix}fitness_vs_runtime_test.png')
+
+    # Plot distribution of test fitness
+    plt.figure()
+    plt.title('Distribution of last test fitness')
+    for i, name in enumerate(all_data):
+        ax = plt.subplot(1, len(all_data), i+1)
+        data = all_data[name]['longrun']['raw_test']
+        print('Histogram for data with shape', data.shape)
+        plt.hist(data[:,-1], 50)
+        ax.set_title(bn[name])  # Better name as title
+    render(f'{prefix}fitness_distribution_test.png')
 
     # Plot fitness in wall-clock time
     plt.figure()
