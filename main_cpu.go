@@ -42,6 +42,7 @@ import (
 	"time"
 )
 
+// Type aliasing (requires Go 1.9)
 type cInt = int32
 type cFloat64 = float64
 
@@ -84,6 +85,7 @@ type Config struct {
 	of_train, of_test         *string  // Paths for output fitness files
 	of_sem_train, of_sem_test *string  // Paths for output semantic files
 	of_timing                 *string  // Path for file with timings
+	of_contribs               *string  // Path for file with models contributions
 	error_measure             *string  // Error measure to use for fitness
 	n_workers                 *int     // Number of workers to use (goroutines)
 	use_linear_scaling        *bool    // Activate linear scaling
@@ -115,6 +117,11 @@ type Population struct {
 // The Semantic of one individual is a vector as long as the dataset where each
 // component is the value obtaining by applying the individual to the datum.
 type Semantic []cFloat64
+
+// The contribution to each individual is a vector as long as the ML models
+// used in evolution (e.g. GP, LR, SVR, NN -> 4). Each component counts the
+// contribution of a specific ML model during the evolution.
+type Contribution []cInt
 
 // Conversion to string "3.14,2.71,1.41"
 func (s Semantic) String() string {
@@ -149,6 +156,7 @@ var (
 		of_sem_train:           flag.String("out_file_train_semantic", "semantictrain.txt.gz", "Path for the output file with train semantic data"),
 		of_sem_test:            flag.String("out_file_test_semantic", "semantictest.txt.gz", "Path for the output file with test semantic data"),
 		of_timing:              flag.String("out_file_exec_timing", "execution_time.txt", "Path for the output file containing timings"),
+		of_contribs:            flag.String("out_file_contributions", "contributions.txt", "Path for the output file containing best individual models contributions"),
 		error_measure:          flag.String("error_measure", "MSE", "Error measures to use for fitness (MSE, RMSE, MAE or MRE)"),
 		n_workers:              flag.Int("workers", runtime.NumCPU(), "Number of workers (goroutines) to use"),
 		use_linear_scaling:     flag.Bool("linsc", false, "Enable linear scaling when computing fitness"),
@@ -184,6 +192,9 @@ var (
 	sem_train_cases_new []Semantic // Semantics of the population, computed on training set, at current generation g+1
 	sem_test_cases      []Semantic // Semantics of the population, computed on test set, at generation g
 	sem_test_cases_new  []Semantic // Semantics of the population, computed on test set, at current generation g+1
+
+	contrib     []Contribution // Contribution of each ML method at generation g
+	contrib_new []Contribution // Contribution of each ML method at generation g+1
 
 	// Last random trees used (used in proto dump)
 	rt1 []cInt
@@ -334,6 +345,8 @@ func read_config_file(path string) {
 			*config.of_sem_test = fields[1]
 		case "out_file_exec_timing":
 			*config.of_timing = fields[1]
+		case "out_file_contributions":
+			*config.of_contribs = fields[1]
 		case "error_measure":
 			*config.error_measure = fields[1]
 		default:
@@ -821,6 +834,9 @@ func reproduction(i cInt) {
 	copy(sem_train_cases_new[old_i], sem_train_cases[i])
 	copy(sem_test_cases_new[old_i], sem_test_cases[i])
 
+	// Copy old contribution to selected individual
+	copy(contrib_new[old_i], contrib[i])
+
 	fit_new[old_i] = fit[i]
 	fit_test_new[old_i] = fit_test[i]
 }
@@ -833,6 +849,11 @@ func geometric_semantic_crossover(i cInt) {
 		// Replace the individual with the crossover of two parents
 		p1 := tournament_selection()
 		p2 := tournament_selection()
+
+		// Aggregate contribution of parents by summing them into child's
+		for j, _ := range contrib[i] {
+			contrib_new[i][j] = contrib[p1][j] + contrib[p2][j]
+		}
 
 		var ls_a, ls_b cFloat64
 		// Generate a random tree and compute its semantic (train and test)
@@ -855,6 +876,8 @@ func geometric_semantic_crossover(i cInt) {
 		// The best individual will not be changed
 		copy(sem_train_cases_new[i], sem_train_cases[i])
 		copy(sem_test_cases_new[i], sem_test_cases[i])
+
+		copy(contrib_new[i], contrib[i])
 
 		fit_new[i] = fit[i]
 		fit_test_new[i] = fit_test[i]
@@ -1141,6 +1164,7 @@ func update_tables() {
 	fit_test, fit_test_new = fit_test_new, fit_test
 	sem_train_cases, sem_train_cases_new = sem_train_cases_new, sem_train_cases
 	sem_test_cases, sem_test_cases_new = sem_test_cases_new, sem_test_cases
+	contrib, contrib_new = contrib_new, contrib
 }
 
 // Return the next text token in the provided scanner
@@ -1200,7 +1224,12 @@ func load_file_and_replace(path string, repl map[string]interface{}) string {
 }
 
 // Allocate memory for fitness and semantic value for each individual
-func init_tables() {
+// Num models is the number of ML models used in evolution (must be at least 1)
+func init_tables(num_models int) {
+	if num_models < 1 {
+		panic("Cannot use less than one model")
+	}
+
 	fit = make([]cFloat64, *config.population_size)
 	fit_test = make([]cFloat64, *config.population_size)
 	fit_new = make([]cFloat64, *config.population_size)
@@ -1211,11 +1240,17 @@ func init_tables() {
 	sem_test_cases = make([]Semantic, *config.population_size)
 	sem_test_cases_new = make([]Semantic, *config.population_size)
 
+	contrib = make([]Contribution, *config.population_size)
+	contrib_new = make([]Contribution, *config.population_size)
+
 	for i := 0; i < *config.population_size; i++ {
 		sem_train_cases[i] = make(Semantic, nrow)
 		sem_train_cases_new[i] = make(Semantic, nrow)
 		sem_test_cases[i] = make(Semantic, nrow_test)
 		sem_test_cases_new[i] = make(Semantic, nrow_test)
+
+		contrib[i] = make(Contribution, num_models)
+		contrib_new[i] = make(Contribution, num_models)
 	}
 }
 
@@ -1295,6 +1330,8 @@ func main() {
 	defer semantic_train.Close()
 	semantic_test := create_or_panic(*config.of_sem_test)
 	defer semantic_test.Close()
+	contributions := create_or_panic(*config.of_contribs)
+	defer contributions.Close()
 
 	// Seed RNG
 	log.Println("Random seed:", *config.rng_seed)
@@ -1309,9 +1346,9 @@ func main() {
 	start = time.Now()
 
 	// Create population, prepare for seeding
-	p := NewPopulation(len(sem_seed)) //(sem_seed...)
+	p := NewPopulation(len(sem_seed))
 	// Prepare tables (memory allocation)
-	init_tables()
+	init_tables(len(sem_seed) + 1)
 
 	// Seed individuals
 	for i := range sem_seed {
@@ -1319,6 +1356,16 @@ func main() {
 		sem := read_sem(sem_seed[i])
 		sem_train_cases[i] = sem[:nrow]
 		sem_test_cases[i] = sem[nrow:]
+	}
+
+	// Set contribution for the rest of the population
+	for i := 0; i < *config.population_size; i++ {
+		if i < len(sem_seed) {
+			contrib[i][i+1] = 1 // Each model uses a different slot
+		} else {
+
+			contrib[i][0] = 1 // 0th contribution is the GP itself
+		}
 	}
 
 	initialize_population(p, cInt(*config.init_type))
@@ -1331,6 +1378,8 @@ func main() {
 	// Write semantic before start
 	fmt.Fprintln(semantic_train, sem_train_cases[index_best])
 	fmt.Fprintln(semantic_test, sem_test_cases[index_best])
+	// Write initial individual contributions
+	fmt.Fprintln(contributions, contrib[index_best])
 
 	fmt.Fprintln(executiontime, time.Since(start))
 
@@ -1349,6 +1398,7 @@ func main() {
 				fit_test[k],
 				sem_train_cases[k],
 				sem_test_cases[k],
+				contrib[k],
 				nil,
 				// k == index_best, // Is this the best yet?
 			}
@@ -1397,6 +1447,7 @@ func main() {
 					fit_test_new[k],        // Save its test fitness
 					sem_train_cases_new[k], // Save its train semantic
 					sem_test_cases_new[k],  // Save its test semantic
+					contrib[k],             // Save history contribution
 					random_trees,           // Random trees used in the operator
 				}
 				pb_pop.Individuals = append(pb_pop.Individuals, ind)
@@ -1418,6 +1469,9 @@ func main() {
 		// Write semantic of best individual
 		fmt.Fprintln(semantic_train, sem_train_cases[index_best])
 		fmt.Fprintln(semantic_test, sem_test_cases[index_best])
+
+		// Write initial individual contributions
+		fmt.Fprintln(contributions, contrib[index_best])
 
 		fmt.Fprintln(executiontime, time.Since(start))
 	}
