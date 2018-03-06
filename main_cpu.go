@@ -118,14 +118,20 @@ type Population struct {
 // component is the value obtaining by applying the individual to the datum.
 type Semantic []cFloat64
 
+// Conversion to string "3.14,2.71,1.41"
+func (s Semantic) String() string {
+	v := fmt.Sprint([]cFloat64(s)) // Print regular slice to string
+	return strings.Trim(strings.Join(strings.Fields(v), ","), "[]")
+}
+
 // The contribution to each individual is a vector as long as the ML models
 // used in evolution (e.g. GP, LR, SVR, NN -> 4). Each component counts the
 // contribution of a specific ML model during the evolution.
 type Contribution []cInt
 
-// Conversion to string "3.14,2.71,1.41"
-func (s Semantic) String() string {
-	v := fmt.Sprint([]cFloat64(s)) // Print regular slice to string
+// Conversion to comma-separated string "3,1,4,1,5"
+func (c Contribution) String() string {
+	v := fmt.Sprint([]cInt(c)) // Print regular slice to string
 	return strings.Trim(strings.Join(strings.Fields(v), ","), "[]")
 }
 
