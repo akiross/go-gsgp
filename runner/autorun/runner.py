@@ -216,8 +216,14 @@ class Logger:
         # Create directory (assuming it's not existing)
         mkdir(basedir)
 
+    def out_dump_file(self, k):
+        return os.path.join(self._dir, f'dump_{k}.proto')
+
     def out_file_timing(self, k):
         return os.path.join(self._dir, f'timing{k}.txt')
+
+    def out_file_contrib(self, k):
+        return os.path.join(self._dir, f'contribs_{k}.txt')
 
     def out_fit_train(self, k):
         return os.path.join(self._dir, f'fit_train_{k}.txt')
@@ -327,6 +333,8 @@ class Runner:
             '-out_file_test_fitness', logger.out_fit_test(k),
             '-out_file_train_semantic', logger.out_sem_train(k),
             '-out_file_test_semantic', logger.out_sem_test(k),
+            '-out_file_contributions', logger.out_file_contrib(k),
+            # '-proto_dump', logger.out_dump_file(k),
             '-train_file', if_train,
             '-test_file', if_test,
             '-max_number_generations', n_gens,
@@ -604,11 +612,11 @@ def main():
         if args.all:
             best_models = models2[-1]  # Use all models 
             bm = len(models2) - 1  # Last combination
-            tot_time = 0  # No time spent
+            t_tot = 0  # No time spent
         elif args.none:
             best_models = models2[0] # Use no models 
             bm = 0
-            tot_time = 0  # No time spent
+            t_tot = 0  # No time spent
         else:
             t_start = time.perf_counter()
             # Create somepath/sim/sim{r}/selection
@@ -679,6 +687,8 @@ def main():
         logi('stats.selection.walltimes', f'Time for running selection: {t_tot}')
         # Increment best model usage
         global_stats['best_models'] = global_stats.get('best_models', Counter()) + Counter({str(bm): 1})
+        # Save combination
+        global_stats['bm_hist'] = global_stats.get('bm_hist', []).append(bm)
         logi('stats.selection.models.best', f'{bm} {best_models}')
 
         print('Performing long run with best models', models2[bm])

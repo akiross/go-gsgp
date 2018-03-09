@@ -10,3 +10,4 @@ go-gsgp-*
 .vscode
 .cache
 .ipynb_checkpoints
+*.png
