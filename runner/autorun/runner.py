@@ -678,7 +678,7 @@ def main():
             logi('stats.selection.cv.fitness.average', f'Average fitnesses of NCV tests (models combinations on rows)\n{row_average(ncv_fits)}')
 
             # Use average validation fitness to determine best model
-            bm = np.array(ncv_fits)[:,1].argmin()
+            bm = int(np.array(ncv_fits)[:,1].argmin())
             best_models = models2[bm]
 
         # Save selection time
@@ -688,7 +688,7 @@ def main():
         # Increment best model usage
         global_stats['best_models'] = global_stats.get('best_models', Counter()) + Counter({str(bm): 1})
         # Save combination
-        global_stats['bm_hist'] = global_stats.get('bm_hist', []).append(bm)
+        global_stats.setdefault('bm_hist', []).append(bm)
         logi('stats.selection.models.best', f'{bm} {best_models}')
 
         print('Performing long run with best models', models2[bm])

@@ -1,6 +1,4 @@
 import os
-import sys
-import gzip
 import json
 import pickle
 import argparse
@@ -9,6 +7,12 @@ import pandas as pd
 from cycler import cycler
 from itertools import count
 from matplotlib import pyplot as plt
+from runner import zopen
+from runner import powerset
+
+
+# Use cache files if available?
+pickle_cache = True
 
 
 def use_grayscale_print_style():
@@ -19,7 +23,7 @@ def use_grayscale_print_style():
 
     # Create cycler object. Use any styling from above you please
     monochrome = (cycler('color', ['k']
-                         ) * cycler('linestyle', ['-', '--', ':', '=.']))
+                         ) * cycler('linestyle', ['-', '--', ':', '-.']))
     # fill_cycle = (cycler('hatch', ['///', '--', '...','\///', 'xxx', '\\\\'],
     #                     ) * cycler('color', 'w'))
 
@@ -140,7 +144,7 @@ def load_cv_data(path):
 
 def load_runs(prefix_path, sub_name, sub_prefix='{prefix}{r}'):
     """Load runs data, returns dictionary with both raw and processed data.
-    
+
     Raw data are tables with one row per run.
     """
     # Get simulation name
@@ -203,6 +207,38 @@ def load_semantic_avg(name, run, dataset):
     return np.loadtxt(f'{name}/{name}{run}/longrun/sem_{dataset}_avg.txt')
 
 
+def load_contributions(stats, run, contrib_files):
+    """Loads contributions of all models for one run."""
+    # Caricare la combinazione vincente di modelli per questo run (bm)
+    nm = len(stats['models'])  # Number of models
+    models2_ind = list(powerset(range(nm)))  # Combinations
+    bmc = stats['bm_hist'][run]  # Best models combination in this run
+
+    # contribs = []
+    full_contribs = []
+    for path in contrib_files:
+        with zopen(path, 'rt') as fp:
+            full_contrib = []
+            # contrib = []
+            for line in fp:
+                # Contribution at one time step
+                contr = [int(v) for v in line.split(',')]
+                # contrib.append(contr)
+                # Each data we read has length eq to number of best models +1
+                assert len(contr) == len(models2_ind[bmc]) + 1
+                # Map contribution to the entire set of models
+                full_contr = [0] * (nm + 1)  # Contribution counters
+                full_contr[0] = contr[0]  # Genetic Programming is first
+                # models2_ind[i] is a tuple containing the ID of used models
+                for i, n in zip(models2_ind[bmc], contr[1:]):
+                    full_contr[i+1] = n
+                full_contrib.append(full_contr)  # One line
+            # contribs.append(contrib)
+            full_contribs.append(full_contrib)  # One file
+
+    return full_contribs
+
+
 def load_semantic_files(sem_files):
     """Given a list of paths, return loaded semantics, as nested lists.
 
@@ -212,14 +248,15 @@ def load_semantic_files(sem_files):
     """
     sem = []
     for path in sem_files:
-        with gzip.open(path) as fp:
+        print('Loading semantic file', path)
+        with zopen(path, 'rt') as fp:
             sem.append([[float(v) for v in l.split(',')] for l in fp])
     return sem
 
 
 def load_sem_distance_avg(name, run, k_folds, dataset):
     """Return the first-last semantic distance for the specified run.
-    
+
     Distances are computed as L² norm of differences between first and last
     semantic vectors for each fold, then averaged along folds to yield a
     a real value for each time step in the data series.
@@ -234,7 +271,7 @@ def load_sem_distance_avg(name, run, k_folds, dataset):
     assert k_folds == sem.shape[0]
     # To compute average distances, first compute distances for every run
     # Distance for time t is sum((sem[:,t,:] - sem[:,0,:])**2)**0.5
-    t0 = np.repeat(sem[:,0,:], sem.shape[1], axis=0).reshape(sem.shape)
+    t0 = np.repeat(sem[:, 0, :], sem.shape[1], axis=0).reshape(sem.shape)
     sd = (sem - t0) ** 2  # Squared differences
     # Sum along semantic axis and take square root
     # yielding shape ac.shape == (k_folds, time_steps)
@@ -313,34 +350,38 @@ def parse_arguments():
     parser = argparse.ArgumentParser(
         description="Read results and generate plots and statistics")
     parser.add_argument('-d', '--dir', nargs=2, action='append',
-            metavar=('name', 'directory'),
-            help='name-directory pair to load')
+                        metavar=('name', 'directory'),
+                        help='name-directory pair to load')
     parser.add_argument('-m', '--median', action='store_true',
-            help='Use median instead of mean to average data')
+                        help='Use median instead of mean to average data')
     parser.add_argument('-t', '--use-title', action='store_true',
-            help='Add a title to plots')
+                        help='Add a title to plots')
     parser.add_argument('-c', '--use-color', action='store_true',
-            help='Enable colorful plots (for screens)')
+                        help='Enable colorful plots (for screens)')
     parser.add_argument('-w', '--extra-wide', action='store_true',
-            help='Enable extra-wide plots')
+                        help='Enable extra-wide plots')
     parser.add_argument('-g', '--gui', action='store_true',
-            help='Show plots in a GUI instead of saving to file')
+                        help='Show plots in a GUI instead of saving to file')
     parser.add_argument('prefix', help='Prefix for output files')
     return parser.parse_args()
 
 
-def load_all_data(out_dirs):
-    """Load all the data from a structured directory."""
-    # Load global statistics
+def load_stats(out_dirs):
+    """Load global statistics for each directory."""
     stats = {}
     for name in out_dirs:
         with open(os.path.join(name, 'stats.json')) as statsfile:
             stats[name] = json.load(statsfile)
+    return stats
+
+
+def load_all_data(stats, out_dirs):
+    """Load all the data from a structured directory."""
     # Load data
     all_data = {}
     for name in out_dirs:
         pfile = f'{name}_all_data.pkl'
-        if os.path.exists(pfile):
+        if pickle_cache and os.path.exists(pfile):
             print('Found existing file', pfile, 'loading it')
             # Load previously saved data
             with open(pfile, 'rb') as fp:
@@ -349,24 +390,27 @@ def load_all_data(out_dirs):
             print('Pickled file', pfile, 'not found, creating')
             runs = stats[name]['args']['runs']
             k_folds = stats[name]['args']['k_folds']
-            print('Ottenuto dalle stats il numero di runs', runs, 'e il k_folds', k_folds)
             all_data[name] = {}
             all_data[name]['longrun'] = load_runs(name, 'longrun')
             # Ensure we loaded data for the specified number of runs
             assert all_data[name]['longrun']['raw_train'].shape[0] == runs
             if uses_selection(stats, name):
-                # some_path/prefix/prefixR/selection/selectionM/selectionM_K/inner_sub_name
                 sel_data = []
                 for m, mods in enumerate(stats[name]['models2']):
                     # For each model, load all run data
                     mod_data = []
                     for r in range(runs):
                         # Get base path of r-th run
-                        run_path = os.path.join(name, f'{name}{r}', 'selection')
-                        # lollete_sel/lollete_sel0/selection/selection0/shortrun
-                        run_path = os.path.join(name, f'{name}{r}', 'selection', f'selection{m}')
-                        # lollete_sel/lollete_sel0/selection/selection3/selection3_1/inner_sub_name
-                        # Using '{prefix}_{r}' to produce selectionM/selectionM_K
+                        run_path = os.path.join(name,
+                                                f'{name}{r}',
+                                                'selection')
+                        # somerun/somerun0/selection/selection0/shortrun
+                        run_path = os.path.join(name,
+                                                f'{name}{r}',
+                                                'selection',
+                                                f'selection{m}')
+                        # Using '{prefix}_{r}' to produce
+                        # selectionM/selectionM_K
                         data = load_runs(run_path, 'shortrun', '{prefix}_{r}')
                         mod_data.append(data)
                         # In every run, we perform k-fold CV, and for each fold
@@ -379,7 +423,42 @@ def load_all_data(out_dirs):
             with open(pfile, 'wb') as fp:
                 pickle.dump(all_data[name], fp)
     # Return loaded data
-    return all_data, stats
+    return all_data
+
+
+def load_all_contribs(stats, out_dirs):
+    """Return a dictionary with contribution data for each out dir.
+
+    raw_contribs data has shape (n_runs, k_folds, time_steps, models_used)."""
+
+    all_contribs = {}
+    for name in out_dirs:
+        pfile = f'{name}_contrib_data.pkl'
+        if pickle_cache and False:
+            print('Found existing file', pfile, 'loading it')
+            with open(pfile, 'rb') as fp:
+                all_contribs = pickle.load(fp)
+        else:
+            n_runs = stats[name]['args']['runs']
+            k_folds = stats[name]['args']['k_folds']
+            # Load contribution data
+            contrib_data = []
+            for run in range(n_runs):
+                # Load a contributions for each fold into a list
+                contr_files = (f'{name}/{name}{run}/longrun/contribs_{k}.txt'
+                               for k in range(k_folds))
+                contrib_data.append(load_contributions(stats[name],
+                                                       run,
+                                                       contr_files))
+            # Save raw data for all the runs
+            # Shape is (n_runs, k_folds, time_steps, models_used)
+            cd = np.array(contrib_data)
+            all_contribs[name] = {'raw_contribs': cd}
+            # Average across k-folds
+            all_contribs[name]['contribs'] = np.mean(cd, axis=1)
+            with open(pfile, 'wb') as fp:
+                pickle.dump(all_contribs, fp)
+    return all_contribs
 
 
 def main():
@@ -415,20 +494,30 @@ def main():
     else:
         render = save_img
 
+    def indices(data):
+        # Indices to compute depending on user choice
+        if use_mean:
+            central = np.mean(data, axis=0)
+        else:
+            central = np.median(data, axis=0)
+        std = np.std(data, axis=0)
+        return central, std
+
     # Build names mapping
     bn = dict(zip(out_dirs, better_names))
     bnf = dict(zip(out_dirs, better_names_files))
 
     # Load training data from specified directories
     print('Loading train and test data')
-    all_data, stats = load_all_data(out_dirs)
+    stats = load_stats(out_dirs)
+    all_data = load_all_data(stats, out_dirs)
 
     # Load semantic distances TODO move to function
     print('Loading semantic data')
     sem_evo_trains, sem_evo_tests = {}, {}
     for name in out_dirs:
         pfile = f'{name}_sem_data.pkl'
-        if os.path.exists(pfile):
+        if pickle_cache and os.path.exists(pfile):
             print('Found existing file', pfile, 'loading it')
             with open(pfile, 'rb') as fp:
                 sem_evo_dat_train, sem_evo_dat_test = pickle.load(fp)
@@ -442,8 +531,9 @@ def main():
                     name, n_runs, k_folds, 'test')
             with open(pfile, 'wb') as fp:
                 pickle.dump((sem_evo_dat_train, sem_evo_dat_test), fp)
-        print('Computing averages') # , shp(sem_evo_dat_train))
+        print('Computing averages')  # , shp(sem_evo_dat_train))
 
+        # TODO this is not using the indices() function
         if use_mean:
             sem_evo_trains[name] = {'m': np.mean(sem_evo_dat_train, axis=0)}
             sem_evo_tests[name] = {'m': np.mean(sem_evo_dat_test, axis=0)}
@@ -454,13 +544,39 @@ def main():
         sem_evo_trains[name]['s'] = np.std(sem_evo_dat_train, axis=0)
         sem_evo_tests[name]['s'] = np.std(sem_evo_dat_test, axis=0)
 
-    def indices(data):
-        if use_mean:
-            central = np.mean(data, axis=0)
-        else:
-            central = np.median(data, axis=0)
-        std = np.std(data, axis=0)
-        return central, std
+    print('Loading contribution data')
+    all_contribs = load_all_contribs(stats, out_dirs)
+    # Print contributions, both barchart and scatter (vs generations)
+    for name in all_contribs:
+        mod_names = ['gp'] + stats[name]['models']
+        # Average along runs
+        cont_avg, cont_std = indices(all_contribs[name]['contribs'])
+        plt.figure()
+        plt.plot(cont_avg)
+        plt.title('Contributions for each model while evolving' * ut)
+        plt.legend(mod_names)
+        plt.xlabel('Generation')
+        plt.ylabel('Contribution count')
+        render(f'{prefix}{bnf[name]}_contrib_vs_gen.png')
+
+        # Get x-positions for bar chart
+        pos = range(cont_avg.shape[1])
+        # Consider only last row now
+        cont_avg = cont_avg[-1, :]
+        cont_std = cont_std[-1, :]
+        # Convert percentage (also std)
+        cont_avg_p = 100 * cont_avg / sum(cont_avg)
+        cont_std_p = 100 * cont_std / sum(cont_avg)
+        # Bar plot with contributions
+        plt.figure()
+        ax = plt.subplot()
+        plt.bar(pos, cont_avg_p, yerr=cont_std_p)
+        plt.title('Contributions at last generation' * ut)
+        plt.xlabel('Model')
+        plt.ylabel('Contribution %')
+        ax.set_xticks(pos)
+        ax.set_xticklabels(mod_names)
+        render(f'{prefix}{bnf[name]}_contrib_hist.png')
 
     # Time series plots
     scatter('Train fitness' * ut, ('Generation', 'Fitness'), {
@@ -497,13 +613,14 @@ def main():
 
     # Plot distribution of test fitness
     plt.figure()
-    plt.title('Distribution of last test fitness')
+    plt.suptitle('Distribution of last test fitness' * ut)
     for i, name in enumerate(all_data):
         ax = plt.subplot(1, len(all_data), i+1)
         data = all_data[name]['longrun']['raw_test']
-        print('Histogram for data with shape', data.shape)
-        plt.hist(data[:,-1], 50)
+        # print('Histogram for data with shape', data.shape)
+        plt.hist(data[:, -1], 50)
         ax.set_title(bn[name])  # Better name as title
+    # plt.subplots_adjust(top=0.85)  # Avoid overlapping
     render(f'{prefix}fitness_distribution_test.png')
 
     # Plot fitness in wall-clock time
@@ -575,8 +692,8 @@ def main():
 
     # Pie charts with running times
     for name in stats:
-        n_runs  = stats[name]['args']['runs']
-        k_folds  = stats[name]['args']['k_folds']
+        n_runs = stats[name]['args']['runs']
+        k_folds = stats[name]['args']['k_folds']
         j_folds = stats[name]['args']['j_folds']
         runtimes = stats[name]['sel_time'], stats[name]['lon_time']
         labels = [f'selection ({j_folds}-folds)\n{runtimes[0]/n_runs:.1f}s',
@@ -645,7 +762,7 @@ def main():
         # TODO mettere anche qui mediane e deviazioni standard
         title = f'Evolution of semantic distances in time for {name}'
         ax.set_title(title * ut)
-        plt.xlabel('Generations')
+        plt.xlabel('Generation')
         plt.ylabel('Semantic distance')  # (L²)')
         plt.legend(['Train', 'Test'])
         render(f'{prefix}{bnf[name]}_sem_dist_evolution.png')
