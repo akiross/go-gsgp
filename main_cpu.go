@@ -131,7 +131,7 @@ type Contribution []cFloat64
 
 // Conversion to comma-separated string "3,1,4,1,5"
 func (c Contribution) String() string {
-	v := fmt.Sprint([]cInt(c)) // Print regular slice to string
+	v := fmt.Sprint([]cFloat64(c)) // Print regular slice to string
 	return strings.Trim(strings.Join(strings.Fields(v), ","), "[]")
 }
 
