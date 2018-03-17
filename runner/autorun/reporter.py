@@ -7,8 +7,10 @@ import pandas as pd
 from cycler import cycler
 from itertools import count
 from matplotlib import pyplot as plt
-from runner import zopen
-from runner import powerset
+from .runner import zopen
+from .runner import powerset
+from scipy.stats import mannwhitneyu
+from statsmodels.stats.diagnostic import lilliefors
 
 
 # Use cache files if available?
@@ -351,7 +353,8 @@ def parse_arguments():
         description="Read results and generate plots and statistics")
     parser.add_argument('-d', '--dir', nargs=2, action='append',
                         metavar=('name', 'directory'),
-                        help='name-directory pair to load')
+                        help='name-directory pair to load. The first will be'
+                        'used as reference sample when performing U-tests')
     parser.add_argument('-m', '--median', action='store_true',
                         help='Use median instead of mean to average data')
     parser.add_argument('-t', '--use-title', action='store_true',
@@ -362,6 +365,10 @@ def parse_arguments():
                         help='Enable extra-wide plots')
     parser.add_argument('-g', '--gui', action='store_true',
                         help='Show plots in a GUI instead of saving to file')
+    parser.add_argument('-p', '--p-value', type=float, default=0.01,
+                        help='Change p-value used in statistical tests')
+    parser.add_argument('-b', '--bins', type=int, default=30,
+                        help='Number of bins when plotting histograms')
     parser.add_argument('prefix', help='Prefix for output files')
     return parser.parse_args()
 
@@ -401,9 +408,6 @@ def load_all_data(stats, out_dirs):
                     mod_data = []
                     for r in range(runs):
                         # Get base path of r-th run
-                        run_path = os.path.join(name,
-                                                f'{name}{r}',
-                                                'selection')
                         # somerun/somerun0/selection/selection0/shortrun
                         run_path = os.path.join(name,
                                                 f'{name}{r}',
@@ -418,7 +422,7 @@ def load_all_data(stats, out_dirs):
                         assert data['raw_train'].shape[0] == k_folds
                     sel_data.append(mod_data)
                 all_data[name]['selection'] = sel_data
-                print('Selection data', sel_data)
+                # print('Selection data', sel_data)
             # Save data to file for convenience
             with open(pfile, 'wb') as fp:
                 pickle.dump(all_data[name], fp)
@@ -434,7 +438,7 @@ def load_all_contribs(stats, out_dirs):
     all_contribs = {}
     for name in out_dirs:
         pfile = f'{name}_contrib_data.pkl'
-        if pickle_cache and False:
+        if pickle_cache and os.path.exists(pfile):
             print('Found existing file', pfile, 'loading it')
             with open(pfile, 'rb') as fp:
                 all_contribs = pickle.load(fp)
@@ -445,7 +449,7 @@ def load_all_contribs(stats, out_dirs):
             contrib_data = []
             for run in range(n_runs):
                 # Load a contributions for each fold into a list
-                contr_files = (f'{name}/{name}{run}/longrun/contribs_{k}.txt'
+                contr_files = (f'{name}/{name}{run}/longrun/contribs_{k}.txt.gz'
                                for k in range(k_folds))
                 contrib_data.append(load_contributions(stats[name],
                                                        run,
@@ -464,7 +468,6 @@ def load_all_contribs(stats, out_dirs):
 def main():
     """Read data and produce statistics."""
     # old_cycler = plt.rcParams['axes.prop_cycle']
-
     args = parse_arguments()
     better_names, out_dirs = zip(*args.dir)
     prefix = args.prefix
@@ -550,6 +553,7 @@ def main():
     for name in all_contribs:
         mod_names = ['gp'] + stats[name]['models']
         # Average along runs
+        print(f'Dimensione contribs {name}', all_contribs[name]['contribs'].shape)
         cont_avg, cont_std = indices(all_contribs[name]['contribs'])
         plt.figure()
         plt.plot(cont_avg)
@@ -557,6 +561,7 @@ def main():
         plt.legend(mod_names)
         plt.xlabel('Generation')
         plt.ylabel('Contribution count')
+        print(f'Produco il file {prefix}{bnf[name]}_contrib_vs_gen.png')
         render(f'{prefix}{bnf[name]}_contrib_vs_gen.png')
 
         # Get x-positions for bar chart
@@ -570,7 +575,9 @@ def main():
         # Bar plot with contributions
         plt.figure()
         ax = plt.subplot()
-        plt.bar(pos, cont_avg_p, yerr=cont_std_p)
+        plt.bar(pos, cont_avg)
+        # plt.bar(pos, cont_avg_p)
+        # plt.bar(pos, cont_avg_p, yerr=cont_std_p)
         plt.title('Contributions at last generation' * ut)
         plt.xlabel('Model')
         plt.ylabel('Contribution %')
@@ -611,17 +618,55 @@ def main():
              for name in all_data})
     render(f'{prefix}fitness_vs_runtime_test.png')
 
-    # Plot distribution of test fitness
+    # Plot distribution of train fitness
+    plt.figure()
+    plt.suptitle('Distribution of last train fitness' * ut)
+    for i, name in enumerate(all_data):
+        ax = plt.subplot(1, len(all_data), i+1)
+        data = all_data[name]['longrun']['raw_train']
+        # print('Histogram for data with shape', data.shape)
+        plt.hist(data[:, -1], args.bins)
+        ax.set_title(bn[name])  # Better name as title
+    # plt.subplots_adjust(top=0.85)  # Avoid overlapping
+    render(f'{prefix}fitness_distribution_train.png')
+
     plt.figure()
     plt.suptitle('Distribution of last test fitness' * ut)
     for i, name in enumerate(all_data):
         ax = plt.subplot(1, len(all_data), i+1)
         data = all_data[name]['longrun']['raw_test']
         # print('Histogram for data with shape', data.shape)
-        plt.hist(data[:, -1], 50)
+        plt.hist(data[:, -1], args.bins)
         ax.set_title(bn[name])  # Better name as title
     # plt.subplots_adjust(top=0.85)  # Avoid overlapping
     render(f'{prefix}fitness_distribution_test.png')
+
+    last_test_fit = {}
+    for name in all_data:
+        # Get last fitness test values
+        samples = all_data[name]['longrun']['raw_test'][:, -1]
+        last_test_fit[name] = samples
+        # Run lilliefors normality test
+        stat, pval = lilliefors(samples)
+        if pval < args.p_value:
+            print(f'Test fitness {name} IS NOT normally distributed (p={pval})')
+        else:
+            print(f'Test fitness {name} IS normally distributed (p={pval})')
+
+    # Perform U-tests
+    for name in out_dirs[1:]:
+        ref = out_dirs[0]
+        stat, pval = mannwhitneyu(
+                        last_test_fit[ref],
+                        last_test_fit[name],
+                        alternative='two-sided')
+        print(f'MWW U-test {ref} - {name} U: {stat}, p-value: {pval}')
+        if pval < args.p_value:
+            print(f'  p-value lt {args.p_value}, DIFFERENT distributions')
+        else:
+            print(f'  p-value gt {args.p_value}, SAME distributions')
+
+        
 
     # Plot fitness in wall-clock time
     plt.figure()
@@ -738,7 +783,7 @@ def main():
         ax.bar(x, h_rel)
 
         # Write models in column
-        labels = ['\n'.join(s[3:] for s in m) if m else '(none)' for m in mc]
+        labels = ['\n'.join(s for s in m) if m else '(none)' for m in mc]
         ax.set_xticks(range(nm))
         ax.set_xticklabels(labels)
         plt.xlabel('Models combinations')

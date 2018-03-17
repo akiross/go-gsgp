@@ -53,10 +53,18 @@ the `--all` and `--none` options are passed (and the `-s` flag was omitted).
 
 When done, the `reporter.py` script can be run like the following:
 
-    python3 reporter.py -d Select results_sel \
+    python3 reporter.py -d None results_none \
+                        -d Select results_sel \
 	                    -d All results_all \
-						-d None results_none \
 						some_prefix_
+
+The module can be installed with pip for live exploration of data, as well as
+batch processing by using
+
+    python3 -m autorun.reporter -d None results_none (etc)
+
+Please note that order matters: the first result will be use as null hypothesis
+when performing U-tests (other data are tested against the first).
 
 This will read the data in the specified directory and produce the results
 using `some_prefix_` prepended to files. This will also pickle the data onto

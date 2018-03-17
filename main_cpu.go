@@ -162,7 +162,7 @@ var (
 		of_sem_train:           flag.String("out_file_train_semantic", "semantictrain.txt.gz", "Path for the output file with train semantic data"),
 		of_sem_test:            flag.String("out_file_test_semantic", "semantictest.txt.gz", "Path for the output file with test semantic data"),
 		of_timing:              flag.String("out_file_exec_timing", "execution_time.txt", "Path for the output file containing timings"),
-		of_contribs:            flag.String("out_file_contributions", "contributions.txt", "Path for the output file containing best individual models contributions"),
+		of_contribs:            flag.String("out_file_contributions", "contributions.txt.gz", "Path for the output file containing best individual models contributions"),
 		error_measure:          flag.String("error_measure", "MSE", "Error measures to use for fitness (MSE, RMSE, MAE or MRE)"),
 		n_workers:              flag.Int("workers", runtime.NumCPU(), "Number of workers (goroutines) to use"),
 		use_linear_scaling:     flag.Bool("linsc", false, "Enable linear scaling when computing fitness"),
