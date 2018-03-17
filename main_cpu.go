@@ -127,7 +127,7 @@ func (s Semantic) String() string {
 // The contribution to each individual is a vector as long as the ML models
 // used in evolution (e.g. GP, LR, SVR, NN -> 4). Each component counts the
 // contribution of a specific ML model during the evolution.
-type Contribution []cInt
+type Contribution []cFloat64
 
 // Conversion to comma-separated string "3,1,4,1,5"
 func (c Contribution) String() string {
@@ -847,6 +847,18 @@ func reproduction(i cInt) {
 	fit_test_new[old_i] = fit_test[i]
 }
 
+// dest[i] = (src1[i] + src2[i]) / sum(dest)
+func normalized_copy(dest, src1, src2 Contribution) {
+	var tot cFloat64
+	for j, _ := range dest {
+		dest[j] = src1[j] + src2[j]
+		tot += dest[j]
+	}
+	for j, _ := range dest {
+		dest[j] /= tot
+	}
+}
+
 // Performs a geometric semantic crossover
 func geometric_semantic_crossover(i cInt) {
 	if i != index_best {
@@ -857,9 +869,7 @@ func geometric_semantic_crossover(i cInt) {
 		p2 := tournament_selection()
 
 		// Aggregate contribution of parents by summing them into child's
-		for j, _ := range contrib[i] {
-			contrib_new[i][j] = contrib[p1][j] + contrib[p2][j]
-		}
+		normalized_copy(contrib_new[i], contrib[p1], contrib[p2])
 
 		var ls_a, ls_b cFloat64
 		// Generate a random tree and compute its semantic (train and test)
