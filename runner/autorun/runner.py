@@ -223,7 +223,7 @@ class Logger:
         return os.path.join(self._dir, f'timing{k}.txt')
 
     def out_file_contrib(self, k):
-        return os.path.join(self._dir, f'contribs_{k}.txt')
+        return os.path.join(self._dir, f'contribs_{k}.txt.gz')
 
     def out_fit_train(self, k):
         return os.path.join(self._dir, f'fit_train_{k}.txt')
