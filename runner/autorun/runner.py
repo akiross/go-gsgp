@@ -718,8 +718,8 @@ def main():
     logi('stats.selection.models.frequency', f'{global_stats["best_models"]}')
 
     with zopen(os.path.join(args.outdir, 'stats.json'), 'wt') as statfile:
-        for k, v in global_stats.items():
-            print(f'Writing stat {k} = {v}')
+        #for k, v in global_stats.items():
+        #    print(f'Writing stat {k} = {v}')
         json.dump(global_stats, statfile)
         #pickle.dump(statfile, global_stats)
 

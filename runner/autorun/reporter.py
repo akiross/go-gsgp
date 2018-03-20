@@ -224,7 +224,7 @@ def load_contributions(stats, run, contrib_files):
             # contrib = []
             for line in fp:
                 # Contribution at one time step
-                contr = [int(v) for v in line.split(',')]
+                contr = [float(v) for v in line.split(',')]
                 # contrib.append(contr)
                 # Each data we read has length eq to number of best models +1
                 assert len(contr) == len(models2_ind[bmc]) + 1
