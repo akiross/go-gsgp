@@ -470,6 +470,10 @@ def main():
     # old_cycler = plt.rcParams['axes.prop_cycle']
     args = parse_arguments()
     better_names, out_dirs = zip(*args.dir)
+
+    # Strip trailing / from out_dirs
+    out_dirs = [d.rstrip('/') for d in out_dirs]
+
     prefix = args.prefix
     use_mean = not args.median
 
