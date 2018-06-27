@@ -5,11 +5,10 @@ import argparse
 import numpy as np
 import pandas as pd
 from cycler import cycler
-from itertools import count
 from matplotlib import pyplot as plt
-from .runner import zopen
-from .runner import powerset
+from .runner import zopen, powerset
 from scipy.stats import mannwhitneyu
+from itertools import count, combinations
 from statsmodels.stats.diagnostic import lilliefors
 
 
@@ -465,6 +464,27 @@ def load_all_contribs(stats, out_dirs):
     return all_contribs
 
 
+def compute_and_print_lilliefors(all_data_raw, label, p_value):
+    # Get last fitness train values
+    samples = all_data_raw[:, -1]
+    # Run lilliefors normality test
+    stat, pval = lilliefors(samples)
+    if pval < p_value:
+        print(f'{label} IS NOT normally distributed (p={pval})')
+    else:
+        print(f'{label} IS normally distributed (p={pval})')
+    return samples
+
+
+def compute_and_print_mww(data_h0, data_h1, label, p_value):
+    stat, pval = mannwhitneyu(data_h0, data_h1, alternative='two-sided')
+    print(f'MWW U-test {label} U: {stat}, p-value: {pval}')
+    if pval < p_value:
+        print(f'  p-value lt {p_value}, DIFFERENT distributions')
+    else:
+        print(f'  p-value gt {p_value}, SAME distributions')
+
+
 def main():
     """Read data and produce statistics."""
     # old_cycler = plt.rcParams['axes.prop_cycle']
@@ -554,7 +574,7 @@ def main():
     print('Loading contribution data')
     all_contribs = load_all_contribs(stats, out_dirs)
     # Print contributions, both barchart and scatter (vs generations)
-    for name in all_contribs:
+    for name in out_dirs: # all_contribs:
         mod_names = ['gp'] + stats[name]['models']
         # Average along runs
         print(f'Dimensione contribs {name}', all_contribs[name]['contribs'].shape)
@@ -645,32 +665,64 @@ def main():
     # plt.subplots_adjust(top=0.85)  # Avoid overlapping
     render(f'{prefix}fitness_distribution_test.png')
 
+    last_train_fit = {}
     last_test_fit = {}
     for name in all_data:
-        # Get last fitness test values
-        samples = all_data[name]['longrun']['raw_test'][:, -1]
-        last_test_fit[name] = samples
+        last_train_fit[name] = compute_and_print_lilliefors(
+            all_data[name]['longrun']['raw_train'],
+            f'Train {name}',
+            args.p_value,
+        )
+        last_test_fit[name] = compute_and_print_lilliefors(
+            all_data[name]['longrun']['raw_test'],
+            f'Test {name}',
+            args.p_value,
+        )
+        # Get last fitness train values
+        #samples = all_data[name]['longrun']['raw_train'][:, -1]
+        #last_train_fit[name] = samples
         # Run lilliefors normality test
-        stat, pval = lilliefors(samples)
-        if pval < args.p_value:
-            print(f'Test fitness {name} IS NOT normally distributed (p={pval})')
-        else:
-            print(f'Test fitness {name} IS normally distributed (p={pval})')
+        #stat, pval = lilliefors(samples)
+        #if pval < args.p_value:
+        #    print(f'Train fitness {name} IS NOT normally distributed (p={pval})')
+        #else:
+        #    print(f'Train fitness {name} IS normally distributed (p={pval})')
+        ## Same for test
+        #samples = all_data[name]['longrun']['raw_test'][:, -1]
+        #last_test_fit[name] = samples
+        #stat, pval = lilliefors(samples)
+        #if pval < args.p_value:
+        #    print(f'Test fitness {name} IS NOT normally distributed (p={pval})')
+        #else:
+        #    print(f'Test fitness {name} IS normally distributed (p={pval})')
 
     # Perform U-tests
-    for name in out_dirs[1:]:
-        ref = out_dirs[0]
-        stat, pval = mannwhitneyu(
-                        last_test_fit[ref],
-                        last_test_fit[name],
-                        alternative='two-sided')
-        print(f'MWW U-test {ref} - {name} U: {stat}, p-value: {pval}')
-        if pval < args.p_value:
-            print(f'  p-value lt {args.p_value}, DIFFERENT distributions')
-        else:
-            print(f'  p-value gt {args.p_value}, SAME distributions')
+    for h0, h1 in sorted(combinations(range(len(out_dirs)), 2)):
+        h0, h1 = out_dirs[h0], out_dirs[h1]
+        compute_and_print_mww(
+            last_train_fit[h0],
+            last_train_fit[h1],
+            f'Train {h0} - {h1}',
+            args.p_value,
+        )
+        compute_and_print_mww(
+            last_test_fit[h0],
+            last_test_fit[h1],
+            f'Test {h0} - {h1}',
+            args.p_value,
+        )
 
-        
+    #for name in out_dirs[1:]:
+    #    ref = out_dirs[0]
+    #    stat, pval = mannwhitneyu(
+    #                    last_test_fit[ref],
+    #                    last_test_fit[name],
+    #                    alternative='two-sided')
+    #    print(f'MWW U-test {ref} - {name} U: {stat}, p-value: {pval}')
+    #    if pval < args.p_value:
+    #        print(f'  p-value lt {args.p_value}, DIFFERENT distributions')
+    #    else:
+    #        print(f'  p-value gt {args.p_value}, SAME distributions')
 
     # Plot fitness in wall-clock time
     plt.figure()
