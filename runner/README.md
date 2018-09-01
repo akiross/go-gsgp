@@ -16,25 +16,39 @@ designed it basically to compare 3 type of runs:
 CLI for `reporter.py` is not very useful as that script is intended primarily
 to produce plots for journals.
 
+## Installing
+
+Install the package and call it as a python module:
+
+	pip3 install [--user] --upgrade-strategy only-if-needed -U .
+
+In this way the module is accessible from anywhere using
+
+    python3 -m autorun.runner
+    python3 -m autorun.reporter
+
 ## Running
 
 An example execution is the following:
 
-    python3 runner.py --noask -C config.txt -k 5 -j 4 -r 30 -B ./bin/ \
-                      -s 50 -l 2000 \
-                      -M ./models/ \
-                      dataset.txt \
-                      results_sel
-    python3 runner.py --noask -C config.txt -k 5 -j 4 -r 30 -B ./bin/ \
-                      -l 2000 \
-                      -M ./models/ --all \
-                      dataset.txt \
-                      results_all
-    python3 runner.py --noask -C config.txt -k 5 -j 4 -r 30 -B ./bin/ \
-                      -l 2000 \
-                      -M ./models/ --none \
-                      datasets.txt \
-                      results_none
+    python3 -m autorun.runner --noask -C config.txt -r 30 -B ./bin/ \
+                              -k 5 -j 4 \ 
+                              -s 50 -l 2000 \
+                              -M ./models/ \
+                              dataset.txt \
+                              results_sel
+    python3 -m autorun.runner --noask -C config.txt -r 30 -B ./bin/ \
+                              -k 5 -j 4 \ 
+                              -l 2000 \
+                              -M ./models/ --all \
+                              dataset.txt \
+                              results_all
+    python3 -m autorun.runner --noask -C config.txt -r 30 -B ./bin/ \
+                              -k 5 -j 4 \
+                              -l 2000 \
+                              -M ./models/ --none \
+                              datasets.txt \
+                              results_none
 
 These commands perform 30 runs of go-gsgp using `config.txt` as configuration
 file and `dataset.txt` as dataset. Each run uses 5-folds cross-validation, and
@@ -53,10 +67,10 @@ the `--all` and `--none` options are passed (and the `-s` flag was omitted).
 
 When done, the `reporter.py` script can be run like the following:
 
-    python3 reporter.py -d None results_none \
-                        -d Select results_sel \
-	                    -d All results_all \
-						some_prefix_
+    python3 -m autorun.reporter -d None results_none \
+                                -d Select results_sel \
+	                            -d All results_all \
+						        some_prefix_
 
 The module can be installed with pip for live exploration of data, as well as
 batch processing by using

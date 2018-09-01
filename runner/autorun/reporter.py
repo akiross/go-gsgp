@@ -678,6 +678,14 @@ def main():
             f'Test {name}',
             args.p_value,
         )
+        # Print average values for each dataset
+        print(f'Statistics for {name}:')
+        print(f'  Train mean:', np.mean(last_train_fit[name]))
+        print(f'  Train median:', np.median(last_train_fit[name]))
+        print(f'  Train std:', np.std(last_train_fit[name]))
+        print(f'  Test mean:', np.mean(last_test_fit[name]))
+        print(f'  Test median:', np.median(last_test_fit[name]))
+        print(f'  Test std:', np.std(last_test_fit[name]))
         # Get last fitness train values
         #samples = all_data[name]['longrun']['raw_train'][:, -1]
         #last_train_fit[name] = samples

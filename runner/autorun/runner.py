@@ -8,11 +8,11 @@ import gzip
 import json
 import time
 import pickle
+import random
 import logging
 import argparse
 import subprocess
 import numpy as np
-from os import mkdir
 from random import shuffle
 from collections import Counter
 from shutil import copy as file_copy
@@ -111,7 +111,7 @@ class Dataset:
         self._written = [] # Dataset files
         self._outdir = os.path.join(outdir, 'dataset')
 
-        mkdir(self._outdir)
+        os.mkdir(self._outdir)
 
         # Load the data as a list of strings
         self._ds = load_dataset(self._datafile, skip_header)
@@ -214,7 +214,7 @@ class Logger:
     def __init__(self, basedir):
         self._dir = basedir
         # Create directory (assuming it's not existing)
-        mkdir(basedir)
+        os.mkdir(basedir)
 
     def out_dump_file(self, k):
         return os.path.join(self._dir, f'dump_{k}.proto')
@@ -418,7 +418,7 @@ class Forrest:
         print('Average of k-folded semantics!', self._k_sem_train, self._k_sem_test)
 
 
-def load_models(modeldir):
+def load_models(modeldir, warn=False):
     '''Load models from a directory and return them along with the powerset'''
     models = []
     for f in os.listdir(modeldir):
@@ -426,7 +426,7 @@ def load_models(modeldir):
         if os.path.isfile(fp):
             models.append(fp)
 
-    if len(models) > 6:
+    if warn and len(models) > 6:
         print('There are more than 6 models: the process could be very slow.')
         print(models[:3])
         if input('Are you sure you want to continue? (y to go on) ') != 'y':
@@ -442,6 +442,8 @@ def parse_arguments():
         description='Run tests with CV model selection')
     parser.add_argument('--dry', action='store_true',
                         help='Perform a dry run, writing actions on stdout')
+    parser.add_argument('--powerset', action='store_true',
+                        help='Perform test on every combination of models (slow!!)')
     parser.add_argument('--all', action='store_true',
                         help='Use all models without selection')
     parser.add_argument('--none', action='store_true',
@@ -475,12 +477,13 @@ def parse_arguments():
     return parser.parse_args()
 
 
-def write_stats(args, models):
+def write_stats(args, models, nest_mode):
     '''Save some arguments in the global stats, including model names.'''
     # Save arguments
     types = [int, float, bool]  # Types of arguments to save
     args_items = vars(args).items()  # args is a namespace, vars is needed
     global_stats['args'] = {k: v for k, v in args_items if type(v) in types}
+    global_stats['mode'] = 'nested' if nest_mode else 'flat'
     # Save model names
     mod_names = [os.path.basename(m).split('.')[0] for m in models]
     global_stats['models'] = mod_names
@@ -493,6 +496,7 @@ def write_stats(args, models):
     # Number of j-folds
     global_stats['j_folds'] = args.j_folds
 
+
 def get_run_path(outdir, r):
     '''Return the path for the r-th run, given outdir as base directory.'''
     # Remove trailing slash
@@ -503,10 +507,14 @@ def get_run_path(outdir, r):
 
 def setup_dry_run():
     '''Redefine global functions to have no effect.'''
-    global mkdir, zopen, subprocess_run, file_copy, fprint, file_last_line
+    global zopen, subprocess_run, file_copy, fprint, file_last_line
     global logi, load_dataset
 
-    mkdir = lambda path: print(f'DRY RUN: mkdir({path})')
+    os.mkdir = lambda path: print(f'DRY RUN: os.mkdir({path})')
+
+    os.remove = lambda path: print(f'DRY RUN: os.remove({path})')
+
+    np.savetxt = lambda *args: print(f'DRY RUN: np.savetxt({args})')
 
     from io import BytesIO, StringIO
     def _zo(path, mode='rt'):
@@ -530,7 +538,7 @@ def setup_dry_run():
 
     def _fll(path):
         print(f'DRY RUN: file_last_line({path})')
-        return '3.14'
+        return str(random.random())
     file_last_line = _fll
 
     logi = lambda k, a: print('DRY RUN LOG:', k, a)
@@ -550,6 +558,165 @@ def stateller(key, value, description):
     global_stats['description:' + key] = description
 
 
+def run_powerset(args, outdir, models2, dataset):
+    t_start = time.perf_counter()
+    # Create somepath/sim/sim{r}/selection
+    os.mkdir(os.path.join(outdir, 'selection'))
+    # Nested cross validation fitness
+    ncv_fits = []
+    # For every combination of models
+    for m, mods in enumerate(models2):
+        print('Testing performances of models combo', mods)
+        # We need to perform J-folded cross-validation for every K-fold
+        seldir = os.path.join(outdir, 'selection', f'selection{m}')
+        os.mkdir(seldir)
+        avg_j_fits = []
+        for k in range(args.k_folds):
+            # Prepare directory for this nested cross validation
+            # somepath/sim/sim{r}/selection/selection{k}
+            nestdir = os.path.join(seldir, f'selection{m}_{k}')
+            os.mkdir(nestdir)
+            # Build a dataset from the k-th fold train file
+            nested_dataset = Dataset(dataset.get_train_path(k),
+                                     args.j_folds, nestdir,
+                                     skip_header=2)
+            # Check if J is consistent
+            cons, cons_msg = nested_dataset.is_consistent()
+            if not cons:
+                print('Warning! Selected J produces inconsistent semantics!')
+                print(cons_msg)
+                logi('run.nested_dataset', cons_msg)
+            nested_dataset.generate_folds(True)
+            # Prepare run, using 
+            forrest = Forrest(f'shortrun',
+                              args.algorithm,
+                              mods,
+                              nested_dataset,
+                              args.j_folds,  # Use a different fold number
+                              nestdir,
+                              args.bindir,
+                              args.config)
+
+            # Run short simulation
+            k_fits, _, _, _ = forrest.run(args.shortg)
+
+            # Average fitness over J-folds
+            avg_fit = row_average(k_fits)
+            avg_j_fits.append(avg_fit)
+
+            if not args.keep:
+                # There is no need to keep the semantic files here
+                forrest.clean_sem_files()
+
+        # Compute average for each model
+        avg_model_fit = row_average(avg_j_fits)
+        ncv_fits.append(avg_model_fit)
+
+    # Compute selection time for this run and save it
+    t_tot = time.perf_counter() - t_start
+
+    # Log average selection fitness
+    logi('stats.selection.cv.fitness.average', f'Average fitnesses of NCV tests (models combinations on rows)\n{row_average(ncv_fits)}')
+
+    # Use average validation fitness to determine best model
+    bm = int(np.array(ncv_fits)[:,1].argmin())
+    return bm, t_tot
+
+
+def run_set(args, outdir, models2, dataset):
+    """Selezione più veloce: valuta un modello alla volta.
+    
+    Anziché essere O(s^M) è O(M), dove M è il numero di modelli.
+    Funziona valutando le performance dei singoli modelli ed escludendo
+    quelli che in validation ottengono performance inferiori alla mediana.
+    """
+    # Run simulations and collect results
+    # results = []
+    # for model in models2[-1]:  # all_models:
+    #     data = get_validation_dataset()
+    #     r = run_test(model, settings, data)
+    #     results.append(r)
+    # # Filter out nasty models
+    # thre = aggregate(results) < 0.95
+    # # Get best models
+    # bm = [m for i, m in enumerate(all_models) if results[i] < thre]
+    # return models2[bm], t_tot
+    t_start = time.perf_counter()
+    # Create somepath/sim/sim{r}/selection
+    os.mkdir(os.path.join(outdir, 'selection'))
+    # Nested cross validation fitness
+    ncv_fits = []
+    # For every model
+    for m, mods in enumerate(models2):
+        # Keep only 1-item subsets
+        if len(mods) == 0:
+            continue
+        if len(mods) > 1:
+            break  # Assuming |mods| = 1 come before the others
+        print('Testing performances of model', mods)
+        # We need to perform J-folded cross-validation for every K-fold
+        seldir = os.path.join(outdir, 'selection', f'selection{m}')
+        os.mkdir(seldir)
+        avg_j_fits = []
+        for k in range(args.k_folds):
+            # Prepare directory for this nested cross validation
+            # somepath/sim/sim{r}/selection/selection{k}
+            nestdir = os.path.join(seldir, f'selection{m}_{k}')
+            os.mkdir(nestdir)
+            # Build a dataset from the k-th fold train file
+            nested_dataset = Dataset(dataset.get_train_path(k),
+                                     args.j_folds, nestdir,
+                                     skip_header=2)
+            # Check if J is consistent
+            cons, cons_msg = nested_dataset.is_consistent()
+            if not cons:
+                print('Warning! Selected J produces inconsistent semantics!')
+                print(cons_msg)
+                logi('run.nested_dataset', cons_msg)
+            nested_dataset.generate_folds(True)
+            # Prepare run, using 
+            forrest = Forrest(f'shortrun',
+                              args.algorithm,
+                              mods,
+                              nested_dataset,
+                              args.j_folds,  # Use a different fold number
+                              nestdir,
+                              args.bindir,
+                              args.config)
+
+            # Run short simulation
+            k_fits, _, _, _ = forrest.run(args.shortg)
+
+            # Average fitness over J-folds
+            avg_fit = row_average(k_fits)
+            avg_j_fits.append(avg_fit)
+
+            if not args.keep:
+                # There is no need to keep the semantic files here
+                forrest.clean_sem_files()
+
+        # Compute average for each model
+        avg_model_fit = row_average(avg_j_fits)
+        ncv_fits.append(avg_model_fit)
+
+    # Compute selection time for this run and save it
+    t_tot = time.perf_counter() - t_start
+
+    # Log average selection fitness
+    logi('stats.selection.cv.fitness.average', f'Average fitnesses of NCV tests (models combinations on rows)\n{row_average(ncv_fits)}')
+
+    # import pdb; pdb.set_trace()
+    # Remove least 25% less-performant models
+    ncv_fits = np.asarray(ncv_fits)
+    thr = np.percentile(ncv_fits[:,1], 50)
+    logi('stats.selection.cv.fitness.percentile', f'50% of validation fitness values are below {thr}')
+    passing = ncv_fits[:,1] < thr
+    winners = tuple(m for p, m in zip(passing, models2[-1]) if p)
+    assert winners in models2
+    bm = models2.index(winners)
+    return bm, t_tot
+
+
 def main():
     '''Main function to get a fresh scope.'''
     args = parse_arguments()
@@ -559,14 +726,14 @@ def main():
         setup_dry_run()
     else:
         # Create root directory for all the results
-        mkdir(args.outdir)
+        os.mkdir(args.outdir)
         # Setup logging
         logging.basicConfig(filename=os.path.join(args.outdir, 'stats.log'),
                             level=logging.INFO)
     # Models we are applying
-    models, models2 = load_models(args.modeldir)
+    models, models2 = load_models(args.modeldir, args.powerset)
     # Save some interesting data in global stats
-    write_stats(args, models)
+    write_stats(args, models, args.powerset)
 
     logger_stats = logging.getLogger('stats')
     logger_other = logging.getLogger('other')
@@ -595,7 +762,7 @@ def main():
         print(f'Performing run {r}')
         # Prepare output directory for this run
         outdir = get_run_path(args.outdir, r)  # somepath/sim += /sim{r}
-        mkdir(outdir)
+        os.mkdir(outdir)
 
         # Prepare dataset in somepath/sim/sim{r}/dataset
         # This single run will have the datafile partitioned in k folds
@@ -610,76 +777,19 @@ def main():
 
         # Model selection
         if args.all:
-            best_models = models2[-1]  # Use all models 
             bm = len(models2) - 1  # Last combination
             t_tot = 0  # No time spent
         elif args.none:
-            best_models = models2[0] # Use no models 
             bm = 0
             t_tot = 0  # No time spent
         else:
-            t_start = time.perf_counter()
-            # Create somepath/sim/sim{r}/selection
-            mkdir(os.path.join(outdir, 'selection'))
-            # Nested cross validation fitness
-            ncv_fits = []
-            # For every combination of models
-            for m, mods in enumerate(models2):
-                print('Testing performances of models combo', mods)
-                # We need to perform J-folded cross-validation for every K-fold
-                seldir = os.path.join(outdir, 'selection', f'selection{m}')
-                mkdir(seldir)
-                avg_j_fits = []
-                for k in range(args.k_folds):
-                    # Prepare directory for this nested cross validation
-                    # somepath/sim/sim{r}/selection/selection{k}
-                    nestdir = os.path.join(seldir, f'selection{m}_{k}')
-                    mkdir(nestdir)
-                    # Build a dataset from the k-th fold train file
-                    nested_dataset = Dataset(dataset.get_train_path(k),
-                                             args.j_folds, nestdir,
-                                             skip_header=2)
-                    # Check if J is consistent
-                    cons, cons_msg = nested_dataset.is_consistent()
-                    if not cons:
-                        print('Warning! Selected J produces inconsistent semantics!')
-                        print(cons_msg)
-                        logi('run.nested_dataset', cons_msg)
-                    nested_dataset.generate_folds(True)
-                    # Prepare run, using 
-                    forrest = Forrest(f'shortrun',
-                                      args.algorithm,
-                                      mods,
-                                      nested_dataset,
-                                      args.j_folds,  # Use a different fold number
-                                      nestdir,
-                                      args.bindir,
-                                      args.config)
+            if args.powerset:
+                bm, t_tot = run_powerset(args, outdir, models2, dataset)
+            else:
+                bm, t_tot = run_set(args, outdir, models2, dataset)
 
-                    # Run short simulation
-                    k_fits, _, _, _ = forrest.run(args.shortg)
-
-                    # Average fitness over J-folds
-                    avg_fit = row_average(k_fits)
-                    avg_j_fits.append(avg_fit)
-
-                    if not args.keep:
-                        # There is no need to keep the semantic files here
-                        forrest.clean_sem_files()
-
-                # Compute average for each model
-                avg_model_fit = row_average(avg_j_fits)
-                ncv_fits.append(avg_model_fit)
-
-            # Compute selection time for this run and save it
-            t_tot = time.perf_counter() - t_start
-
-            # Log average selection fitness
-            logi('stats.selection.cv.fitness.average', f'Average fitnesses of NCV tests (models combinations on rows)\n{row_average(ncv_fits)}')
-
-            # Use average validation fitness to determine best model
-            bm = int(np.array(ncv_fits)[:,1].argmin())
-            best_models = models2[bm]
+        # Get actual 
+        best_models = models2[bm]
 
         # Save selection time
         global_stats['sel_time'] = global_stats.get('sel_time', 0) + t_tot
