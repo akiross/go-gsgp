@@ -4,6 +4,7 @@ import pickle
 import argparse
 import numpy as np
 import pandas as pd
+from pathlib import Path
 from cycler import cycler
 from matplotlib import pyplot as plt
 from .runner import zopen, powerset
@@ -402,22 +403,30 @@ def load_all_data(stats, out_dirs):
             assert all_data[name]['longrun']['raw_train'].shape[0] == runs
             if uses_selection(stats, name):
                 sel_data = []
+                print('Using selection on models', stats[name]['models2'])
                 for m, mods in enumerate(stats[name]['models2']):
                     # For each model, load all run data
                     mod_data = []
+                    print('Loading model data for model set', mods, 'expected runs', runs)
                     for r in range(runs):
                         # Get base path of r-th run
                         # somerun/somerun0/selection/selection0/shortrun
-                        run_path = os.path.join(name,
-                                                f'{name}{r}',
-                                                'selection',
-                                                f'selection{m}')
+                        run_path = Path(name) / f'{name}{r}' / 'selection' / f'selection{m}'
+                        if not run_path.exists():
+                            print('NOT FOUND SKIP')
+                            continue
+                        #run_path = os.path.join(name,
+                        #                        f'{name}{r}',
+                        #                        'selection',
+                        #                        f'selection{m}')
+                        print('RUN PATH', run_path)
                         # Using '{prefix}_{r}' to produce
                         # selectionM/selectionM_K
                         data = load_runs(run_path, 'shortrun', '{prefix}_{r}')
                         mod_data.append(data)
                         # In every run, we perform k-fold CV, and for each fold
                         # we perform a nested run with j-fold CV
+                        print('Data raw train shape', data['raw_train'].shape, 'kfolds', k_folds)
                         assert data['raw_train'].shape[0] == k_folds
                     sel_data.append(mod_data)
                 all_data[name]['selection'] = sel_data
@@ -580,11 +589,12 @@ def main():
         print(f'Dimensione contribs {name}', all_contribs[name]['contribs'].shape)
         cont_avg, cont_std = indices(all_contribs[name]['contribs'])
         plt.figure()
-        plt.plot(cont_avg)
+        plt.plot(cont_avg / cont_avg.sum(axis=1).reshape((-1, 1)))
         plt.title('Contributions for each model while evolving' * ut)
         plt.legend(mod_names)
         plt.xlabel('Generation')
         plt.ylabel('Contribution count')
+        # plt.yscale('log')
         print(f'Produco il file {prefix}{bnf[name]}_contrib_vs_gen.png')
         render(f'{prefix}{bnf[name]}_contrib_vs_gen.png')
 
@@ -599,9 +609,9 @@ def main():
         # Bar plot with contributions
         plt.figure()
         ax = plt.subplot()
-        plt.bar(pos, cont_avg)
-        # plt.bar(pos, cont_avg_p)
-        # plt.bar(pos, cont_avg_p, yerr=cont_std_p)
+        #plt.bar(pos, cont_avg)
+        plt.bar(pos, cont_avg_p)
+        #plt.bar(pos, cont_avg_p, yerr=cont_std_p)
         plt.title('Contributions at last generation' * ut)
         plt.xlabel('Model')
         plt.ylabel('Contribution %')

@@ -32,6 +32,7 @@ import (
 	"io/ioutil"
 	"log"
 	"math"
+	"math/big"
 	"math/rand"
 	"os"
 	"runtime"
@@ -127,12 +128,24 @@ func (s Semantic) String() string {
 // The contribution to each individual is a vector as long as the ML models
 // used in evolution (e.g. GP, LR, SVR, NN -> 4). Each component counts the
 // contribution of a specific ML model during the evolution.
-type Contribution []cFloat64
+type Contribution []*big.Int
+
+func NewContribution(num_elements int) Contribution {
+	c := make(Contribution, num_elements)
+	for i := 0; i < num_elements; i++ {
+		c[i] = big.NewInt(0)
+	}
+	return c
+}
 
 // Conversion to comma-separated string "3,1,4,1,5"
 func (c Contribution) String() string {
-	v := fmt.Sprint([]cFloat64(c)) // Print regular slice to string
+	v := fmt.Sprint([]*big.Int(c)) // Print regular slice to string
 	return strings.Trim(strings.Join(strings.Fields(v), ","), "[]")
+}
+
+func (c Contribution) AsBytes() []byte {
+	return []byte(c.String())
 }
 
 var (
@@ -841,21 +854,21 @@ func reproduction(i cInt) {
 	copy(sem_test_cases_new[old_i], sem_test_cases[i])
 
 	// Copy old contribution to selected individual
-	copy(contrib_new[old_i], contrib[i])
+	copy_contrib(contrib_new[old_i], contrib[i])
 
 	fit_new[old_i] = fit[i]
 	fit_test_new[old_i] = fit_test[i]
 }
 
-// dest[i] = (src1[i] + src2[i]) / sum(dest)
-func normalized_copy(dest, src1, src2 Contribution) {
-	var tot cFloat64
-	for j, _ := range dest {
-		dest[j] = src1[j] + src2[j]
-		tot += dest[j]
+func copy_contrib(z, x Contribution) {
+	for i := range z {
+		z[i].Set(x[i])
 	}
+}
+
+func merge_contribs(dest, src1, src2 Contribution) {
 	for j, _ := range dest {
-		dest[j] /= tot
+		dest[j].Add(src1[j], src2[j])
 	}
 }
 
@@ -869,7 +882,7 @@ func geometric_semantic_crossover(i cInt) {
 		p2 := tournament_selection()
 
 		// Aggregate contribution of parents by summing them into child's
-		normalized_copy(contrib_new[i], contrib[p1], contrib[p2])
+		merge_contribs(contrib_new[i], contrib[p1], contrib[p2])
 
 		var ls_a, ls_b cFloat64
 		// Generate a random tree and compute its semantic (train and test)
@@ -893,7 +906,7 @@ func geometric_semantic_crossover(i cInt) {
 		copy(sem_train_cases_new[i], sem_train_cases[i])
 		copy(sem_test_cases_new[i], sem_test_cases[i])
 
-		copy(contrib_new[i], contrib[i])
+		copy_contrib(contrib_new[i], contrib[i])
 
 		fit_new[i] = fit[i]
 		fit_test_new[i] = fit_test[i]
@@ -1265,8 +1278,8 @@ func init_tables(num_models int) {
 		sem_test_cases[i] = make(Semantic, nrow_test)
 		sem_test_cases_new[i] = make(Semantic, nrow_test)
 
-		contrib[i] = make(Contribution, num_models)
-		contrib_new[i] = make(Contribution, num_models)
+		contrib[i] = NewContribution(num_models)
+		contrib_new[i] = NewContribution(num_models)
 	}
 }
 
@@ -1377,10 +1390,10 @@ func main() {
 	// Set contribution for the rest of the population
 	for i := 0; i < *config.population_size; i++ {
 		if i < len(sem_seed) {
-			contrib[i][i+1] = 1 // Each model uses a different slot
+			contrib[i][i+1].SetInt64(1) // Each model uses a different slot
 		} else {
 
-			contrib[i][0] = 1 // 0th contribution is the GP itself
+			contrib[i][0].SetInt64(1) // 0th contribution is the GP itself
 		}
 	}
 
@@ -1414,7 +1427,7 @@ func main() {
 				fit_test[k],
 				sem_train_cases[k],
 				sem_test_cases[k],
-				contrib[k],
+				contrib[k].AsBytes(),
 				nil,
 				// k == index_best, // Is this the best yet?
 			}
@@ -1463,7 +1476,7 @@ func main() {
 					fit_test_new[k],        // Save its test fitness
 					sem_train_cases_new[k], // Save its train semantic
 					sem_test_cases_new[k],  // Save its test semantic
-					contrib[k],             // Save history contribution
+					contrib[k].AsBytes(),   // Save history contribution
 					random_trees,           // Random trees used in the operator
 				}
 				pb_pop.Individuals = append(pb_pop.Individuals, ind)

@@ -322,7 +322,7 @@ class Runner:
         for n, mod in enumerate(mods):
             mod_file = logger.get_mod_file(n, k)
             with zopen(mod_file, 'w') as omod, logger.open_log_model_stderr(n, k) as merr:
-                subprocess_run([mod, if_train, if_test], stdout=omod, stderr=merr)
+                subprocess_run([mod, if_train, if_test], stdout=omod, stderr=merr, check=True)
             mod_sems.append(mod_file)
 
         run_args = [os.path.join(self._bin_path, self._algo),
@@ -341,7 +341,7 @@ class Runner:
             *mod_sems,
             ]
         with logger.open_log_stdout(k) as lout, logger.open_log_stderr(k) as lerr:
-            subprocess_run([str(a) for a in run_args], stdout=lout, stderr=lerr)
+            subprocess_run([str(a) for a in run_args], stdout=lout, stderr=lerr, check=True)
 
         # Get the last fitness value
         train_fit = float(file_last_line(logger.out_fit_train(k)))
@@ -629,30 +629,29 @@ def run_set(args, outdir, models2, dataset):
     Anziché essere O(s^M) è O(M), dove M è il numero di modelli.
     Funziona valutando le performance dei singoli modelli ed escludendo
     quelli che in validation ottengono performance inferiori alla mediana.
+
+
+    I dati che si producono che forma hanno?
+    Sono simili ai dati della selezione che abbiamo già, ma mancano cose.
+    Idealmente, per far quadrare questi dati con quelli vecchi, dovremmo
+    fare in modo che le strutture delle directory siano compatibili, quindi
+    questa procedura dovrebbe produrre una directory di selezione per ogni
+    modello. Potremmo crearne una vuota, oppure saltare quelle che non ci
+    interessano (e.g. la 0, l'ultima, etc)
+
+    Però in questo modo devo fare in modo che lo script di analisi non legga
+    le directory in modo sequenziale, bensì faccia un tentativo di leggerle e,
+    se mancano, se lo segna. La flag powerset è comunque impostata nelle stats.
     """
-    # Run simulations and collect results
-    # results = []
-    # for model in models2[-1]:  # all_models:
-    #     data = get_validation_dataset()
-    #     r = run_test(model, settings, data)
-    #     results.append(r)
-    # # Filter out nasty models
-    # thre = aggregate(results) < 0.95
-    # # Get best models
-    # bm = [m for i, m in enumerate(all_models) if results[i] < thre]
-    # return models2[bm], t_tot
     t_start = time.perf_counter()
     # Create somepath/sim/sim{r}/selection
     os.mkdir(os.path.join(outdir, 'selection'))
     # Nested cross validation fitness
     ncv_fits = []
-    # For every model
-    for m, mods in enumerate(models2):
-        # Keep only 1-item subsets
-        if len(mods) == 0:
+    # For every model (1-element set)
+    for m, mods in enumerate(models2):  # Skip empty set
+        if len(mods) != 1:
             continue
-        if len(mods) > 1:
-            break  # Assuming |mods| = 1 come before the others
         print('Testing performances of model', mods)
         # We need to perform J-folded cross-validation for every K-fold
         seldir = os.path.join(outdir, 'selection', f'selection{m}')
@@ -834,5 +833,20 @@ def main():
         #pickle.dump(statfile, global_stats)
 
 
+def debug_exceptions(type, value, tb):
+   if hasattr(sys, 'ps1') or not sys.stderr.isatty():
+      # we are in interactive mode or we don't have a tty-like
+      # device, so we call the default hook
+      sys.__excepthook__(type, value, tb)
+   else:
+      import traceback, pdb
+      # we are NOT in interactive mode, print the exception...
+      traceback.print_exception(type, value, tb)
+      print()
+      # ...then start the debugger in post-mortem mode.
+      pdb.pm()
+
+
 if __name__ == '__main__':
+    sys.excepthook = debug_exceptions
     main()
