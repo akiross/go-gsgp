@@ -848,5 +848,5 @@ def debug_exceptions(type, value, tb):
 
 
 if __name__ == '__main__':
-    sys.excepthook = debug_exceptions
+    # sys.excepthook = debug_exceptions
     main()
