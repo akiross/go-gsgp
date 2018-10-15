@@ -11,6 +11,10 @@ This version is compatible with the version 1.0 and features:
 
 # Building
 
+To generate protobuf code, get protobuf on your host, then
+
+    go get github.com/golang/protobuf/protoc-gen-go
+
 To include git version number, compile using:
 
     go build -ldflags "-X main.gitCommit=`git describe --long --dirty --tags --always`"

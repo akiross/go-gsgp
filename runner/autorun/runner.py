@@ -731,6 +731,9 @@ def main():
                             level=logging.INFO)
     # Models we are applying
     models, models2 = load_models(args.modeldir, args.powerset)
+    if len(models) == 0 and not args.none:
+        print('Warning, no model is being used! Use --none to force')
+        return
     # Save some interesting data in global stats
     write_stats(args, models, args.powerset)
 
