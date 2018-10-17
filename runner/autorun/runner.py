@@ -28,6 +28,11 @@ def subprocess_run(args, **kwargs):
     return subprocess.run(args, **kwargs)
 
 
+def printd(*args, **kwargs):
+    """Comment this to skip debug messages."""
+    print(*args, **kwargs)
+
+
 def fprint(fp, *args):
     print(*args, file=fp)
 
@@ -53,7 +58,7 @@ def powerset(iterable):
 
 def row_average(table): 
     """Compute average along first axis (rows)."""
-    fits = np.array(table) # Convert to numpy array
+    fits = np.asarray(table) # Convert to numpy array
     return np.mean(fits, axis=0) # Compute average across rows
 
 
@@ -394,7 +399,7 @@ class Forrest:
         avg_sem_test = load_avg_semantic(self._k_sem_test)
 
         # Return all data
-        return k_fits, k_timings, avg_sem_train, avg_sem_test
+        return np.asarray(k_fits), np.asarray(k_timings), avg_sem_train, avg_sem_test
 
     def save_files(self, avg_sem_train, avg_sem_test):
         '''Save the semantics on text files.'''
@@ -425,6 +430,9 @@ def load_models(modeldir, warn=False):
         fp = os.path.join(modeldir, f)
         if os.path.isfile(fp):
             models.append(fp)
+
+    # Keep models sorted
+    models = sorted(models)
 
     if warn and len(models) > 6:
         print('There are more than 6 models: the process could be very slow.')
@@ -488,7 +496,7 @@ def write_stats(args, models, nest_mode):
     mod_names = [os.path.basename(m).split('.')[0] for m in models]
     global_stats['models'] = mod_names
     # Save powerset
-    global_stats['models2'] = list(powerset(mod_names))
+    #global_stats['models2'] = list(powerset(mod_names))
     # Number of runs to perform
     global_stats['n_runs'] = args.runs
     # Number of k-folds
@@ -624,32 +632,15 @@ def run_powerset(args, outdir, models2, dataset):
 
 
 def run_set(args, outdir, models2, dataset):
-    """Selezione più veloce: valuta un modello alla volta.
-    
-    Anziché essere O(s^M) è O(M), dove M è il numero di modelli.
-    Funziona valutando le performance dei singoli modelli ed escludendo
-    quelli che in validation ottengono performance inferiori alla mediana.
-
-
-    I dati che si producono che forma hanno?
-    Sono simili ai dati della selezione che abbiamo già, ma mancano cose.
-    Idealmente, per far quadrare questi dati con quelli vecchi, dovremmo
-    fare in modo che le strutture delle directory siano compatibili, quindi
-    questa procedura dovrebbe produrre una directory di selezione per ogni
-    modello. Potremmo crearne una vuota, oppure saltare quelle che non ci
-    interessano (e.g. la 0, l'ultima, etc)
-
-    Però in questo modo devo fare in modo che lo script di analisi non legga
-    le directory in modo sequenziale, bensì faccia un tentativo di leggerle e,
-    se mancano, se lo segna. La flag powerset è comunque impostata nelle stats.
-    """
+    """Faster selection that evaluates single models instead of their powerset."""
     t_start = time.perf_counter()
     # Create somepath/sim/sim{r}/selection
     os.mkdir(os.path.join(outdir, 'selection'))
     # Nested cross validation fitness
     ncv_fits = []
     # For every model (1-element set)
-    for m, mods in enumerate(models2):  # Skip empty set
+    for m, mods in enumerate(models2):
+        # Skip al non singletons
         if len(mods) != 1:
             continue
         print('Testing performances of model', mods)
@@ -685,6 +676,8 @@ def run_set(args, outdir, models2, dataset):
 
             # Run short simulation
             k_fits, _, _, _ = forrest.run(args.shortg)
+            # We get one row for each j run, columns are for training and testing
+            assert k_fits.shape == (args.j_folds, 2)
 
             # Average fitness over J-folds
             avg_fit = row_average(k_fits)
@@ -695,6 +688,9 @@ def run_set(args, outdir, models2, dataset):
                 forrest.clean_sem_files()
 
         # Compute average for each model
+        avg_j_fits = np.asarray(avg_j_fits)
+        # We get one row for each k fold, columns are for training and testing
+        assert avg_j_fits.shape == (args.k_folds, 2)
         avg_model_fit = row_average(avg_j_fits)
         ncv_fits.append(avg_model_fit)
 
@@ -705,13 +701,22 @@ def run_set(args, outdir, models2, dataset):
     logi('stats.selection.cv.fitness.average', f'Average fitnesses of NCV tests (models combinations on rows)\n{row_average(ncv_fits)}')
 
     # import pdb; pdb.set_trace()
-    # Remove least 25% less-performant models
+    # Remove models with bad performances
     ncv_fits = np.asarray(ncv_fits)
+    assert ncv_fits.shape == (len([m for m in models2 if len(m) == 1]), 2)
+
     thr = np.percentile(ncv_fits[:,1], 50)
     logi('stats.selection.cv.fitness.percentile', f'50% of validation fitness values are below {thr}')
     passing = ncv_fits[:,1] < thr
+
+    # Save results with average values of models
+    global_stats.setdefault('models_selection_fitness', []).append(ncv_fits.tolist())
+    global_stats.setdefault('models_selection_passing', []).append(passing.tolist())
+
+    # Build a tuple with winning models
     winners = tuple(m for p, m in zip(passing, models2[-1]) if p)
     assert winners in models2
+    # Return index of "winning tuple"
     bm = models2.index(winners)
     return bm, t_tot
 
@@ -832,7 +837,7 @@ def main():
     with zopen(os.path.join(args.outdir, 'stats.json'), 'wt') as statfile:
         #for k, v in global_stats.items():
         #    print(f'Writing stat {k} = {v}')
-        json.dump(global_stats, statfile)
+        json.dump(global_stats, statfile, indent=4, sort_keys=True)
         #pickle.dump(statfile, global_stats)
 
 
