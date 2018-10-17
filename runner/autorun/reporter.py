@@ -379,6 +379,7 @@ def load_stats(out_dirs):
     for name in out_dirs:
         with open(os.path.join(name, 'stats.json')) as statsfile:
             stats[name] = json.load(statsfile)
+            stats[name]['models2'] = list(powerset(stats[name]['models']))
     return stats
 
 
@@ -846,8 +847,16 @@ def main():
         mc = [[s.rsplit('_sem', 1)[0] for s in m] for m in mc]
 
         # Prepare data for plotting
-        x = list(range(nm))
-        h = [int(bm.get(str(i), 0)) for i in range(nm)]
+        # If powerset was used, show all combinations as bins
+        # otherwise, show only winning combinations
+        if stats[name]['args']['powerset']:
+            x = list(range(nm))
+            l = x
+            h = [bm.get(str(i), 0) for i in range(nm)]
+        else:
+            x = list(range(len(bm.keys())))
+            l = [int(i) for i in sorted(bm.keys())]
+            h = [bm.get(i) for i in sorted(bm.keys())]
         # Convert to relative values
         tot = sum(h)
         h_rel = [100 * v / tot for v in h]
@@ -857,8 +866,8 @@ def main():
         ax.bar(x, h_rel)
 
         # Write models in column
-        labels = ['\n'.join(s for s in m) if m else '(none)' for m in mc]
-        ax.set_xticks(range(nm))
+        labels = ['\n'.join(mc[i]) if mc[i] else '(none)' for i in l]
+        ax.set_xticks(x)
         ax.set_xticklabels(labels)
         plt.xlabel('Models combinations')
         plt.ylabel('Selection freq. (%)')
