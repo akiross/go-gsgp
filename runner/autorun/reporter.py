@@ -11,6 +11,7 @@ from .runner import zopen, powerset
 from scipy.stats import mannwhitneyu
 from itertools import count, combinations
 from statsmodels.stats.diagnostic import lilliefors
+from statsmodels import robust
 
 
 # Use cache files if available?
@@ -179,13 +180,16 @@ def load_runs(prefix_path, sub_name, sub_prefix='{prefix}{r}'):
         'raw_timing': cpu_timing,
         'train': (cpu_train.mean(axis=0),
                   cpu_train.std(axis=0),
-                  np.median(cpu_train, axis=0)),
+                  np.median(cpu_train, axis=0),
+                  robust.scale.mad(cpu_train, axis=0)),
         'test': (cpu_test.mean(axis=0),
                  cpu_test.std(axis=0),
-                 np.median(cpu_test, axis=0)),
+                 np.median(cpu_test, axis=0),
+                 robust.scale.mad(cpu_test, axis=0)),
         'timing': (cpu_timing.mean(axis=0),
                    cpu_timing.std(axis=0),
-                   np.median(cpu_timing, axis=0)),
+                   np.median(cpu_timing, axis=0),
+                   robust.scale.mad(cpu_timing, axis=0)),
     }
 
 
@@ -224,7 +228,7 @@ def load_contributions(stats, run, contrib_files):
             # contrib = []
             for line in fp:
                 # Contribution at one time step
-                contr = [float(v) for v in line.split(',')]
+                contr = [int(v) for v in line.split(',')]
                 # contrib.append(contr)
                 # Each data we read has length eq to number of best models +1
                 assert len(contr) == len(models2_ind[bmc]) + 1
@@ -356,7 +360,7 @@ def parse_arguments():
                         help='name-directory pair to load. The first will be'
                         'used as reference sample when performing U-tests')
     parser.add_argument('-m', '--median', action='store_true',
-                        help='Use median instead of mean to average data')
+                        help='Use median instead of mean to average data and MAD as dispersion')
     parser.add_argument('-t', '--use-title', action='store_true',
                         help='Add a title to plots')
     parser.add_argument('-c', '--use-color', action='store_true',
@@ -535,9 +539,10 @@ def main():
         # Indices to compute depending on user choice
         if use_mean:
             central = np.mean(data, axis=0)
+            std = np.std(data, axis=0)
         else:
             central = np.median(data, axis=0)
-        std = np.std(data, axis=0)
+            std = robust.scale.mad(data, axis=0)
         return central, std
 
     # Build names mapping
@@ -574,12 +579,15 @@ def main():
         if use_mean:
             sem_evo_trains[name] = {'m': np.mean(sem_evo_dat_train, axis=0)}
             sem_evo_tests[name] = {'m': np.mean(sem_evo_dat_test, axis=0)}
+            # Standard deviation
+            sem_evo_trains[name]['s'] = np.std(sem_evo_dat_train, axis=0)
+            sem_evo_tests[name]['s'] = np.std(sem_evo_dat_test, axis=0)
         else:
             sem_evo_trains[name] = {'m': np.median(sem_evo_dat_train, axis=0)}
             sem_evo_tests[name] = {'m': np.median(sem_evo_dat_test, axis=0)}
-        # Standard deviation
-        sem_evo_trains[name]['s'] = np.std(sem_evo_dat_train, axis=0)
-        sem_evo_tests[name]['s'] = np.std(sem_evo_dat_test, axis=0)
+            # Median Absolute Dispersion
+            sem_evo_trains[name]['s'] = robust.scale.mad(sem_evo_dat_train, axis=0)
+            sem_evo_tests[name]['s'] = robust.scale.mad(sem_evo_dat_test, axis=0)
 
     print('Loading contribution data')
     all_contribs = load_all_contribs(stats, out_dirs)
@@ -694,9 +702,11 @@ def main():
         print(f'  Train mean:', np.mean(last_train_fit[name]))
         print(f'  Train median:', np.median(last_train_fit[name]))
         print(f'  Train std:', np.std(last_train_fit[name]))
+        print(f'  Train mad:', robust.scale.mad(last_train_fit[name]))
         print(f'  Test mean:', np.mean(last_test_fit[name]))
         print(f'  Test median:', np.median(last_test_fit[name]))
         print(f'  Test std:', np.std(last_test_fit[name]))
+        print(f'  Test mad:', robust.scale.mad(last_test_fit[name]))
         # Get last fitness train values
         #samples = all_data[name]['longrun']['raw_train'][:, -1]
         #last_train_fit[name] = samples
