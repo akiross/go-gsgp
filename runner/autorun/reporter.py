@@ -4,6 +4,7 @@ import pickle
 import argparse
 import numpy as np
 import pandas as pd
+from decimal import Decimal
 from pathlib import Path
 from cycler import cycler
 from matplotlib import pyplot as plt
@@ -11,11 +12,19 @@ from .runner import zopen, powerset
 from scipy.stats import mannwhitneyu
 from itertools import count, combinations
 from statsmodels.stats.diagnostic import lilliefors
-from statsmodels import robust
 
 
 # Use cache files if available?
 pickle_cache = True
+
+def robust_mad(a, c=.6745, axis=0):
+    a = np.asarray(a)
+    center = np.median(a, axis=axis)
+    try:
+        return np.median((np.abs(a-center))/c, axis=axis)
+    except TypeError:
+        c = Decimal(c)
+        return np.median((np.abs(a-center))/c, axis=axis)
 
 
 def use_grayscale_print_style():
@@ -181,15 +190,15 @@ def load_runs(prefix_path, sub_name, sub_prefix='{prefix}{r}'):
         'train': (cpu_train.mean(axis=0),
                   cpu_train.std(axis=0),
                   np.median(cpu_train, axis=0),
-                  robust.scale.mad(cpu_train, axis=0)),
+                  robust_mad(cpu_train, axis=0)),
         'test': (cpu_test.mean(axis=0),
                  cpu_test.std(axis=0),
                  np.median(cpu_test, axis=0),
-                 robust.scale.mad(cpu_test, axis=0)),
+                 robust_mad(cpu_test, axis=0)),
         'timing': (cpu_timing.mean(axis=0),
                    cpu_timing.std(axis=0),
                    np.median(cpu_timing, axis=0),
-                   robust.scale.mad(cpu_timing, axis=0)),
+                   robust_mad(cpu_timing, axis=0)),
     }
 
 
@@ -228,7 +237,7 @@ def load_contributions(stats, run, contrib_files):
             # contrib = []
             for line in fp:
                 # Contribution at one time step
-                contr = [int(v) for v in line.split(',')]
+                contr = [Decimal(v) for v in line.split(',')]
                 # contrib.append(contr)
                 # Each data we read has length eq to number of best models +1
                 assert len(contr) == len(models2_ind[bmc]) + 1
@@ -454,7 +463,18 @@ def load_all_contribs(stats, out_dirs):
         if pickle_cache and os.path.exists(pfile):
             print('Found existing file', pfile, 'loading it')
             with open(pfile, 'rb') as fp:
-                all_contribs = pickle.load(fp)
+                try:
+                    # Uncomment this when working with old data
+                    #while True:
+                    #    subj = pickle.load(fp)
+                    #    data = pickle.load(fp)
+                    #    all_contribs[subj] = data
+                    # New data version, right!
+                    while True:
+                        name, key, data = pickle.load(fp)
+                        all_contribs.setdefault(name, {})[key] = data
+                except EOFError:
+                    pass
         else:
             n_runs = stats[name]['args']['runs']
             k_folds = stats[name]['args']['k_folds']
@@ -469,12 +489,14 @@ def load_all_contribs(stats, out_dirs):
                                                        contr_files))
             # Save raw data for all the runs
             # Shape is (n_runs, k_folds, time_steps, models_used)
-            cd = np.array(contrib_data)
+            cd = np.array(contrib_data, dtype='object')
             all_contribs[name] = {'raw_contribs': cd}
             # Average across k-folds
             all_contribs[name]['contribs'] = np.mean(cd, axis=1)
             with open(pfile, 'wb') as fp:
-                pickle.dump(all_contribs, fp)
+                for key in all_contribs[name]:
+                    pickle.dump((name, key, all_contribs[name][key]), fp)
+                # pickle.dump(all_contribs, fp)
     return all_contribs
 
 
@@ -542,7 +564,7 @@ def main():
             std = np.std(data, axis=0)
         else:
             central = np.median(data, axis=0)
-            std = robust.scale.mad(data, axis=0)
+            std = robust_mad(data, axis=0)
         return central, std
 
     # Build names mapping
@@ -586,8 +608,8 @@ def main():
             sem_evo_trains[name] = {'m': np.median(sem_evo_dat_train, axis=0)}
             sem_evo_tests[name] = {'m': np.median(sem_evo_dat_test, axis=0)}
             # Median Absolute Dispersion
-            sem_evo_trains[name]['s'] = robust.scale.mad(sem_evo_dat_train, axis=0)
-            sem_evo_tests[name]['s'] = robust.scale.mad(sem_evo_dat_test, axis=0)
+            sem_evo_trains[name]['s'] = robust_mad(sem_evo_dat_train, axis=0)
+            sem_evo_tests[name]['s'] = robust_mad(sem_evo_dat_test, axis=0)
 
     print('Loading contribution data')
     all_contribs = load_all_contribs(stats, out_dirs)
@@ -595,7 +617,6 @@ def main():
     for name in out_dirs: # all_contribs:
         mod_names = ['gp'] + stats[name]['models']
         # Average along runs
-        print(f'Dimensione contribs {name}', all_contribs[name]['contribs'].shape)
         cont_avg, cont_std = indices(all_contribs[name]['contribs'])
         plt.figure()
         plt.plot(cont_avg / cont_avg.sum(axis=1).reshape((-1, 1)))
@@ -604,7 +625,7 @@ def main():
         plt.xlabel('Generation')
         plt.ylabel('Contribution count')
         # plt.yscale('log')
-        print(f'Produco il file {prefix}{bnf[name]}_contrib_vs_gen.png')
+        print(f'Producing file {prefix}{bnf[name]}_contrib_vs_gen.png')
         render(f'{prefix}{bnf[name]}_contrib_vs_gen.png')
 
         # Get x-positions for bar chart
@@ -702,11 +723,11 @@ def main():
         print(f'  Train mean:', np.mean(last_train_fit[name]))
         print(f'  Train median:', np.median(last_train_fit[name]))
         print(f'  Train std:', np.std(last_train_fit[name]))
-        print(f'  Train mad:', robust.scale.mad(last_train_fit[name]))
+        print(f'  Train mad:', robust_mad(last_train_fit[name]))
         print(f'  Test mean:', np.mean(last_test_fit[name]))
         print(f'  Test median:', np.median(last_test_fit[name]))
         print(f'  Test std:', np.std(last_test_fit[name]))
-        print(f'  Test mad:', robust.scale.mad(last_test_fit[name]))
+        print(f'  Test mad:', robust_mad(last_test_fit[name]))
         # Get last fitness train values
         #samples = all_data[name]['longrun']['raw_train'][:, -1]
         #last_train_fit[name] = samples
