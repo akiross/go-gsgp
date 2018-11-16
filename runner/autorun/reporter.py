@@ -9,7 +9,7 @@ from pathlib import Path
 from cycler import cycler
 from matplotlib import pyplot as plt
 from .runner import zopen, powerset
-from scipy.stats import mannwhitneyu
+from scipy.stats import mannwhitneyu, ks_2samp
 from itertools import count, combinations
 from statsmodels.stats.diagnostic import lilliefors
 
@@ -512,9 +512,16 @@ def compute_and_print_lilliefors(all_data_raw, label, p_value):
     return samples
 
 
-def compute_and_print_mww(data_h0, data_h1, label, p_value):
+def compute_and_print_tests(data_h0, data_h1, label, p_value):
     stat, pval = mannwhitneyu(data_h0, data_h1, alternative='two-sided')
     print(f'MWW U-test {label} U: {stat}, p-value: {pval}')
+    if pval < p_value:
+        print(f'  p-value lt {p_value}, DIFFERENT distributions')
+    else:
+        print(f'  p-value gt {p_value}, SAME distributions')
+
+    stat, pval = ks_2samp(data_h0, data_h1)
+    print(f'Kolmogorov-Smirnov test {label} KS: {stat}, p-value: {pval}')
     if pval < p_value:
         print(f'  p-value lt {p_value}, DIFFERENT distributions')
     else:
@@ -749,13 +756,13 @@ def main():
     # Perform U-tests
     for h0, h1 in sorted(combinations(range(len(out_dirs)), 2)):
         h0, h1 = out_dirs[h0], out_dirs[h1]
-        compute_and_print_mww(
+        compute_and_print_tests(
             last_train_fit[h0],
             last_train_fit[h1],
             f'Train {h0} - {h1}',
             args.p_value,
         )
-        compute_and_print_mww(
+        compute_and_print_tests(
             last_test_fit[h0],
             last_test_fit[h1],
             f'Test {h0} - {h1}',
